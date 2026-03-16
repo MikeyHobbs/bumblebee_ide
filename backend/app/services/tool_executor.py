@@ -1,0 +1,335 @@
+"""Tool executor: intercepts LLM tool calls and routes to backend services (TICKET-502)."""
+
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any
+
+from app.config import settings
+from app.graph.client import get_graph
+from app.graph.logic_pack import (
+    build_call_chain_pack,
+    build_class_hierarchy_pack,
+    build_function_flow_pack,
+    build_impact_pack,
+    build_mutation_timeline_pack,
+)
+from app.models.exceptions import GraphQueryError, ToolExecutionError
+
+logger = logging.getLogger(__name__)
+
+TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "query_graph",
+            "description": (
+                "Execute a Cypher query against the FalkorDB code graph. "
+                "Use this for ad-hoc graph queries to explore the codebase structure."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cypher": {
+                        "type": "string",
+                        "description": "A read-only Cypher query to execute against the code graph.",
+                    }
+                },
+                "required": ["cypher"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mutation_timeline",
+            "description": (
+                "Get the mutation timeline for a variable: all functions that assign, mutate, "
+                "read, or return it, plus data flow edges (PASSES_TO, FEEDS)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "variable_name": {
+                        "type": "string",
+                        "description": "Qualified variable name to trace.",
+                    }
+                },
+                "required": ["variable_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "impact_analysis",
+            "description": (
+                "Analyze the downstream impact of changing a function: what variables it mutates "
+                "and which other functions consume those variables."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "function_name": {
+                        "type": "string",
+                        "description": "Qualified function name to analyze impact for.",
+                    }
+                },
+                "required": ["function_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_logic_pack",
+            "description": (
+                "Retrieve a Logic Pack (pre-processed subgraph) for a code entity. "
+                "Pack types: call_chain, mutation_timeline, impact, class_hierarchy, function_flow."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pack_type": {
+                        "type": "string",
+                        "enum": ["call_chain", "mutation_timeline", "impact", "class_hierarchy", "function_flow"],
+                        "description": "Type of Logic Pack to retrieve.",
+                    },
+                    "entity_name": {
+                        "type": "string",
+                        "description": "Name of the function, class, or variable to build the pack for.",
+                    },
+                    "hops": {
+                        "type": "integer",
+                        "description": "Max traversal depth for call_chain packs. Default 2.",
+                    },
+                },
+                "required": ["pack_type", "entity_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the content of a file from the indexed repository.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path within the indexed repository.",
+                    }
+                },
+                "required": ["path"],
+            },
+        },
+    },
+]
+
+
+async def execute_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Route a tool call to the appropriate handler.
+
+    Args:
+        tool_name: Name of the tool to execute.
+        arguments: Tool arguments dict.
+
+    Returns:
+        Dict with 'result' key on success, or 'error' key on failure.
+    """
+    handlers: dict[str, Any] = {
+        "query_graph": _handle_query_graph,
+        "mutation_timeline": _handle_mutation_timeline,
+        "impact_analysis": _handle_impact_analysis,
+        "get_logic_pack": _handle_get_logic_pack,
+        "read_file": _handle_read_file,
+    }
+
+    handler = handlers.get(tool_name)
+    if handler is None:
+        return {"error": f"Unknown tool: {tool_name}"}
+
+    try:
+        result = await handler(arguments)
+        return {"result": result}
+    except ToolExecutionError as exc:
+        logger.warning("Tool execution error for %s: %s", tool_name, exc)
+        return {"error": str(exc)}
+    except Exception as exc:
+        logger.error("Unexpected error executing tool %s: %s", tool_name, exc, exc_info=True)
+        return {"error": f"Internal error executing {tool_name}: {exc}"}
+
+
+async def _handle_query_graph(arguments: dict[str, Any]) -> Any:
+    """Execute an ad-hoc Cypher query.
+
+    Args:
+        arguments: Dict with 'cypher' key.
+
+    Returns:
+        Query results as list of dicts.
+
+    Raises:
+        ToolExecutionError: If the query is invalid or fails.
+    """
+    cypher = arguments.get("cypher", "")
+    if not cypher:
+        raise ToolExecutionError("Missing 'cypher' argument")
+
+    # Block write operations
+    write_keywords = {"CREATE", "SET", "DELETE", "DETACH", "MERGE", "REMOVE", "DROP"}
+    upper = cypher.upper()
+    if any(kw in upper for kw in write_keywords):
+        raise ToolExecutionError("Write operations are not allowed")
+
+    graph = get_graph()
+    try:
+        result = graph.query(cypher)
+    except Exception as exc:
+        raise ToolExecutionError(f"Cypher execution failed: {exc}") from exc
+
+    rows: list[dict[str, Any]] = []
+    header = result.header if hasattr(result, "header") else []
+    column_names = [h[1] if isinstance(h, (list, tuple)) else str(h) for h in header]
+
+    for record in result.result_set:
+        row: dict[str, Any] = {}
+        for idx, value in enumerate(record):
+            col_name = column_names[idx] if idx < len(column_names) else f"col_{idx}"
+            if hasattr(value, "properties"):
+                labels = value.labels if hasattr(value, "labels") else []
+                row[col_name] = {"labels": labels, "properties": dict(value.properties)}
+            elif isinstance(value, list):
+                converted = []
+                for item in value:
+                    if hasattr(item, "properties"):
+                        labels = item.labels if hasattr(item, "labels") else []
+                        converted.append({"labels": labels, "properties": dict(item.properties)})
+                    else:
+                        converted.append(item)
+                row[col_name] = converted
+            else:
+                row[col_name] = value
+        rows.append(row)
+
+    return rows
+
+
+async def _handle_mutation_timeline(arguments: dict[str, Any]) -> Any:
+    """Build a mutation timeline for a variable.
+
+    Args:
+        arguments: Dict with 'variable_name' key.
+
+    Returns:
+        Mutation timeline Logic Pack.
+
+    Raises:
+        ToolExecutionError: If variable_name is missing.
+    """
+    variable_name = arguments.get("variable_name", "")
+    if not variable_name:
+        raise ToolExecutionError("Missing 'variable_name' argument")
+
+    try:
+        return build_mutation_timeline_pack(variable_name)
+    except Exception as exc:
+        raise ToolExecutionError(f"Failed to build mutation timeline: {exc}") from exc
+
+
+async def _handle_impact_analysis(arguments: dict[str, Any]) -> Any:
+    """Build an impact analysis for a function.
+
+    Args:
+        arguments: Dict with 'function_name' key.
+
+    Returns:
+        Impact analysis Logic Pack.
+
+    Raises:
+        ToolExecutionError: If function_name is missing.
+    """
+    function_name = arguments.get("function_name", "")
+    if not function_name:
+        raise ToolExecutionError("Missing 'function_name' argument")
+
+    try:
+        return build_impact_pack(function_name)
+    except Exception as exc:
+        raise ToolExecutionError(f"Failed to build impact analysis: {exc}") from exc
+
+
+async def _handle_get_logic_pack(arguments: dict[str, Any]) -> Any:
+    """Build the requested Logic Pack.
+
+    Args:
+        arguments: Dict with 'pack_type' and 'entity_name' keys, optional 'hops'.
+
+    Returns:
+        Logic Pack dict.
+
+    Raises:
+        ToolExecutionError: If required arguments are missing or pack_type is invalid.
+    """
+    pack_type = arguments.get("pack_type", "")
+    entity_name = arguments.get("entity_name", "")
+    if not pack_type or not entity_name:
+        raise ToolExecutionError("Missing 'pack_type' or 'entity_name' argument")
+
+    builders = {
+        "call_chain": lambda: build_call_chain_pack(entity_name, arguments.get("hops", 2)),
+        "mutation_timeline": lambda: build_mutation_timeline_pack(entity_name),
+        "impact": lambda: build_impact_pack(entity_name),
+        "class_hierarchy": lambda: build_class_hierarchy_pack(entity_name),
+        "function_flow": lambda: build_function_flow_pack(entity_name),
+    }
+
+    builder = builders.get(pack_type)
+    if builder is None:
+        raise ToolExecutionError(f"Unknown pack_type: {pack_type}")
+
+    try:
+        return builder()
+    except Exception as exc:
+        raise ToolExecutionError(f"Failed to build {pack_type} pack: {exc}") from exc
+
+
+async def _handle_read_file(arguments: dict[str, Any]) -> Any:
+    """Read a file from the indexed repository.
+
+    Args:
+        arguments: Dict with 'path' key.
+
+    Returns:
+        Dict with 'path' and 'content' keys.
+
+    Raises:
+        ToolExecutionError: If the file cannot be read.
+    """
+    path = arguments.get("path", "")
+    if not path:
+        raise ToolExecutionError("Missing 'path' argument")
+
+    if not settings.watch_path:
+        raise ToolExecutionError("No repository indexed. Use POST /api/v1/index first.")
+
+    abs_path = os.path.join(os.path.abspath(settings.watch_path), path)
+    repo_root = os.path.abspath(settings.watch_path)
+
+    # Prevent directory traversal
+    if not os.path.abspath(abs_path).startswith(repo_root):
+        raise ToolExecutionError("Path traversal not allowed")
+
+    if not os.path.isfile(abs_path):
+        raise ToolExecutionError(f"File not found: {path}")
+
+    try:
+        with open(abs_path, encoding="utf-8") as f:
+            content = f.read()
+        return {"path": path, "content": content}
+    except UnicodeDecodeError as exc:
+        raise ToolExecutionError("File is not valid UTF-8 text") from exc
+    except OSError as exc:
+        raise ToolExecutionError(f"Cannot read file: {exc}") from exc

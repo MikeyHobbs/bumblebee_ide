@@ -1,14 +1,22 @@
+import { useState, useCallback } from "react";
+import LandingPage from "@/components/LandingPage";
+import Layout from "@/components/Layout";
+import { useWebSocket } from "@/hooks/useWebSocket";
+
 function App() {
-  return (
-    <div className="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] font-mono">
-      <div className="flex items-center justify-center h-screen">
-        <div className="text-center">
-          <h1 className="text-2xl font-semibold mb-2">Bumblebee IDE</h1>
-          <p className="text-[var(--text-secondary)]">Visual Logic Engine</p>
-        </div>
-      </div>
-    </div>
-  );
+  const [indexed, setIndexed] = useState(false);
+
+  useWebSocket();
+
+  const handleIndexed = useCallback(() => {
+    setIndexed(true);
+  }, []);
+
+  if (!indexed) {
+    return <LandingPage onIndexed={handleIndexed} />;
+  }
+
+  return <Layout />;
 }
 
 export default App;

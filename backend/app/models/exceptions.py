@@ -25,3 +25,11 @@ class GraphQueryError(BumblebeeError):
 
 class ParseError(BumblebeeError):
     """Raised when AST parsing fails."""
+
+
+class ModelAdapterError(BumblebeeError):
+    """Raised when an LLM model adapter fails."""
+
+
+class ToolExecutionError(BumblebeeError):
+    """Raised when a tool execution fails."""

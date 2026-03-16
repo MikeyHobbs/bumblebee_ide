@@ -224,3 +224,100 @@ SET r.expression_text = $expression_text,
     r.via = $via
 RETURN r
 """
+
+# --- Query templates (Sprint 0 + TICKET-501) ---
+
+GET_NODES_PAGINATED = """
+MATCH (n)
+WHERE ($label = '' OR labels(n)[0] = $label)
+RETURN n
+SKIP $offset
+LIMIT $limit
+"""
+
+GET_NODE_WITH_EDGES = """
+MATCH (n)
+WHERE ID(n) = $node_id
+OPTIONAL MATCH (n)-[r]-(m)
+RETURN n, collect(DISTINCT r) AS rels, collect(DISTINCT m) AS neighbors
+"""
+
+GET_VARIABLE_BY_NAME = """
+MATCH (v:Variable)
+WHERE v.name = $name
+RETURN v
+"""
+
+GET_VARIABLE_TIMELINE = """
+MATCH (v:Variable {name: $variable_name})
+OPTIONAL MATCH (f:Function)-[a:ASSIGNS]->(v) RETURN 'ASSIGNS' AS edge_type, f.name AS func_name, v.name AS var_name, a.line AS line, a.seq AS seq, properties(a) AS props
+UNION ALL
+MATCH (v:Variable {name: $variable_name})
+OPTIONAL MATCH (f:Function)-[m:MUTATES]->(v) RETURN 'MUTATES' AS edge_type, f.name AS func_name, v.name AS var_name, m.line AS line, m.seq AS seq, properties(m) AS props
+UNION ALL
+MATCH (v:Variable {name: $variable_name})
+OPTIONAL MATCH (f:Function)-[r:READS]->(v) RETURN 'READS' AS edge_type, f.name AS func_name, v.name AS var_name, r.line AS line, r.seq AS seq, properties(r) AS props
+UNION ALL
+MATCH (v:Variable {name: $variable_name})
+OPTIONAL MATCH (f:Function)-[ret:RETURNS]->(v) RETURN 'RETURNS' AS edge_type, f.name AS func_name, v.name AS var_name, ret.line AS line, ret.seq AS seq, properties(ret) AS props
+UNION ALL
+MATCH (v:Variable {name: $variable_name})
+OPTIONAL MATCH (v)-[p:PASSES_TO]->(t:Variable) RETURN 'PASSES_TO' AS edge_type, '' AS func_name, t.name AS var_name, p.call_line AS line, p.seq AS seq, properties(p) AS props
+UNION ALL
+MATCH (v:Variable {name: $variable_name})
+OPTIONAL MATCH (src:Variable)-[fd:FEEDS]->(v) RETURN 'FEEDS' AS edge_type, '' AS func_name, src.name AS var_name, fd.line AS line, fd.seq AS seq, properties(fd) AS props
+"""
+
+SEARCH_VARIABLES = """
+MATCH (v:Variable)
+WHERE v.name CONTAINS $name
+RETURN v
+LIMIT 50
+"""
+
+SEARCH_VARIABLES_WITH_SCOPE = """
+MATCH (v:Variable)
+WHERE v.name CONTAINS $name AND v.scope CONTAINS $scope
+RETURN v
+LIMIT 50
+"""
+
+# TICKET-501: Logic Pack query templates
+
+GET_CALL_CHAIN = """
+MATCH path = (f:Function {name: $function_name})-[:CALLS*1..$hops]->(g:Function)
+UNWIND nodes(path) AS n
+WITH collect(DISTINCT n) AS funcs, path
+UNWIND relationships(path) AS r
+RETURN collect(DISTINCT {source: startNode(r).name, target: endNode(r).name, type: type(r), props: properties(r)}) AS edges,
+       [f IN collect(DISTINCT nodes(path)) | head(f)] AS raw_nodes
+"""
+
+GET_IMPACT = """
+MATCH (f:Function {name: $function_name})-[:MUTATES]->(v:Variable)
+OPTIONAL MATCH (consumer:Function)-[:READS]->(v)
+RETURN f, v, collect(DISTINCT consumer) AS consumers
+"""
+
+GET_CLASS_HIERARCHY = """
+MATCH path = (c:Class {name: $class_name})-[:INHERITS*0..5]->(parent:Class)
+OPTIONAL MATCH (cls)-[:DEFINES]->(method:Function)
+WHERE cls IN nodes(path)
+RETURN nodes(path) AS classes, collect(DISTINCT method) AS methods
+"""
+
+GET_FUNCTION_FLOW = """
+MATCH (f:Function {name: $function_name})-[:CONTAINS*1..3]->(child)
+OPTIONAL MATCH (child)-[next:NEXT]->(sibling)
+RETURN f, collect(DISTINCT child) AS children, collect(DISTINCT {source: child.name, target: sibling.name, type: 'NEXT'}) AS next_edges
+"""
+
+GET_LOGIC_PACK_SUBGRAPH = """
+MATCH (center {name: $node_name})
+CALL {
+    WITH center
+    MATCH (center)-[r*1..$hops]-(neighbor)
+    RETURN collect(DISTINCT neighbor) AS neighbors, [rel IN collect(DISTINCT last(r)) | rel] AS rels
+}
+RETURN center, neighbors, rels
+"""

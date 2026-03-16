@@ -67,3 +67,63 @@ body {
     stroke-dashoffset: -9;
   }
 }
+
+/* Cursor blink for terminal */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Monaco gutter icons */
+.mutation-gutter-icon::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--edge-mutation);
+  margin-left: 4px;
+}
+
+.assign-gutter-icon::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--edge-assign);
+  margin-left: 4px;
+}
+
+.read-gutter-icon::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--edge-read);
+  margin-left: 5px;
+}
+
+/* React Flow overrides for dark theme */
+.react-flow__node {
+  font-family: "JetBrains Mono", "SF Mono", "Consolas", monospace;
+}
+
+.react-flow__minimap {
+  border: 1px solid var(--border);
+}
+
+.react-flow__controls button {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.react-flow__controls button:hover {
+  background: var(--bg-tertiary);
+}
+
+.react-flow__controls button svg {
+  fill: var(--text-primary);
+}
