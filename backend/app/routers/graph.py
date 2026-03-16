@@ -246,14 +246,16 @@ async def get_class_detail(class_name: str) -> SubgraphResponse:
 
 
 @router.get("/graph/usages/{node_name:path}", response_model=SubgraphResponse)
-async def get_usages(node_name: str) -> SubgraphResponse:
+async def get_usages(node_name: str, direction: str = "both") -> SubgraphResponse:
     """Get all usages of a node: who calls it, imports it, inherits it, reads it, etc.
 
     Returns the target node at the center plus all nodes that reference it
-    via incoming edges, and edges between those referencing nodes.
+    via incoming edges, and optionally edges between those referencing nodes.
 
     Args:
         node_name: Fully qualified node name (e.g. ``module.Class.method``).
+        direction: ``in`` for only incoming (who uses this node), ``out`` for only
+            outgoing (what this node uses), ``both`` (default) for all.
     """
     try:
         graph = get_graph()
@@ -274,31 +276,33 @@ async def get_usages(node_name: str) -> SubgraphResponse:
         seen.add(target_resp.id)
         nodes.append(target_resp)
 
-        # All incoming edges: who CALLS, IMPORTS, INHERITS, READS, ASSIGNS, MUTATES, etc.
-        in_result = graph.query(
-            "MATCH (src)-[r]->(n {name: $name}) RETURN src, r, n",
-            params={"name": node_name},
-        )
-        for row in in_result.result_set:
-            src_resp = _node_to_response(row[0])
-            if src_resp.id not in seen:
-                seen.add(src_resp.id)
-                nodes.append(src_resp)
-            edges.append(_extract_edge(row[1], row[0], row[2]))
+        # Incoming edges: who CALLS, IMPORTS, INHERITS, READS, ASSIGNS, MUTATES, etc.
+        if direction in ("in", "both"):
+            in_result = graph.query(
+                "MATCH (src)-[r]->(n {name: $name}) RETURN src, r, n",
+                params={"name": node_name},
+            )
+            for row in in_result.result_set:
+                src_resp = _node_to_response(row[0])
+                if src_resp.id not in seen:
+                    seen.add(src_resp.id)
+                    nodes.append(src_resp)
+                edges.append(_extract_edge(row[1], row[0], row[2]))
 
-        # All outgoing edges from the target (what it calls, defines, etc.)
-        out_result = graph.query(
-            "MATCH (n {name: $name})-[r]->(dst) "
-            "WHERE dst:Function OR dst:Class OR dst:Module OR dst:Variable "
-            "RETURN n, r, dst",
-            params={"name": node_name},
-        )
-        for row in out_result.result_set:
-            dst_resp = _node_to_response(row[2])
-            if dst_resp.id not in seen:
-                seen.add(dst_resp.id)
-                nodes.append(dst_resp)
-            edges.append(_extract_edge(row[1], row[0], row[2]))
+        # Outgoing edges from the target (what it calls, defines, etc.)
+        if direction in ("out", "both"):
+            out_result = graph.query(
+                "MATCH (n {name: $name})-[r]->(dst) "
+                "WHERE dst:Function OR dst:Class OR dst:Module OR dst:Variable "
+                "RETURN n, r, dst",
+                params={"name": node_name},
+            )
+            for row in out_result.result_set:
+                dst_resp = _node_to_response(row[2])
+                if dst_resp.id not in seen:
+                    seen.add(dst_resp.id)
+                    nodes.append(dst_resp)
+                edges.append(_extract_edge(row[1], row[0], row[2]))
 
         # Edges between the usage nodes themselves (e.g. callers that also call each other)
         if len(seen) > 2:

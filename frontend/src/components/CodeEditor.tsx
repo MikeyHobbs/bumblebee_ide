@@ -6,17 +6,11 @@ import { useGraphStore } from "@/store/graphStore";
 import { useFileContent } from "@/api/client";
 import { getOrCreateModel } from "@/editor/ModelManager";
 import MutationGutter from "./MutationGutter";
-import type { GraphNode, GraphEdge } from "@/types/graph";
 
 interface GraphNodeResponse {
   id: string;
   label: string;
   properties: Record<string, string | number | boolean | null>;
-}
-
-interface UsagesResponse {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
 }
 
 let definitionProviderRegistered = false;
@@ -93,19 +87,33 @@ function CodeEditor() {
               useEditorStore.getState().requestRevealLine(line);
             }
 
-            // Look up which node this target corresponds to and show its usages graph
+            // Navigate graph to the target function/class control-flow view
             const targetKey = `${filePath}:${line ?? 0}`;
             const nodeName = resolvedTargets.get(targetKey);
             if (nodeName) {
+              const fileName = filePath.split("/").pop() ?? filePath;
+              useGraphStore.getState().drillIntoFile(filePath, fileName);
+              // Determine node type and drill into function/class detail
               void (async () => {
                 try {
-                  const res = await fetch(`/api/v1/graph/usages/${encodeURIComponent(nodeName)}`);
-                  if (res.ok) {
-                    const usages = (await res.json()) as UsagesResponse;
-                    if (usages.nodes.length > 0) {
-                      const shortName = nodeName.split(".").pop() ?? nodeName;
-                      useGraphStore.getState().showQueryResult(shortName, usages.nodes, usages.edges);
-                    }
+                  const res = await fetch("/api/v1/query", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      cypher: `MATCH (n {name: '${nodeName}'}) RETURN n LIMIT 1`,
+                    }),
+                  });
+                  if (!res.ok) return;
+                  const data = (await res.json()) as { nodes: GraphNodeResponse[] };
+                  if (data.nodes.length === 0) return;
+                  const node = data.nodes[0]!;
+                  const mp = typeof node.properties["module_path"] === "string"
+                    ? node.properties["module_path"] as string
+                    : filePath;
+                  if (node.label === "Function") {
+                    useGraphStore.getState().drillIntoFunction(nodeName, mp);
+                  } else if (node.label === "Class") {
+                    useGraphStore.getState().drillIntoClass(nodeName, mp);
                   }
                 } catch { /* non-critical */ }
               })();
@@ -175,7 +183,7 @@ function CodeEditor() {
                   const targetKey = `${mp}:${sl}`;
                   resolvedTargets.set(targetKey, name);
                   locations.push({
-                    uri: monaco.Uri.parse(`file://${mp}`),
+                    uri: monaco.Uri.from({ scheme: "file", path: `/${mp}` }),
                     range: {
                       startLineNumber: sl,
                       startColumn: 1,
@@ -184,25 +192,6 @@ function CodeEditor() {
                     },
                   });
                 }
-              }
-
-              // If only one match, also eagerly show its usages graph
-              if (locations.length === 1 && allNodes.length === 1) {
-                const nodeName = typeof allNodes[0]!.properties["name"] === "string"
-                  ? allNodes[0]!.properties["name"] as string
-                  : allNodes[0]!.id;
-                void (async () => {
-                  try {
-                    const usagesRes = await fetch(`/api/v1/graph/usages/${encodeURIComponent(nodeName)}`);
-                    if (usagesRes.ok) {
-                      const usages = (await usagesRes.json()) as UsagesResponse;
-                      if (usages.nodes.length > 0) {
-                        const shortName = nodeName.split(".").pop() ?? nodeName;
-                        useGraphStore.getState().showQueryResult(shortName, usages.nodes, usages.edges);
-                      }
-                    }
-                  } catch { /* non-critical */ }
-                })();
               }
 
               return locations.length > 0 ? locations : null;

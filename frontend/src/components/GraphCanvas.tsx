@@ -92,10 +92,6 @@ function toFlowEdges(graphEdges: GraphEdge[]): Edge[] {
   }));
 }
 
-/**
- * Compute nesting depth for each node by BFS traversal of CONTAINS edges.
- * Root function node is depth 0, its direct children are depth 1, etc.
- */
 function computeNestingDepth(nodes: Node[], edges: Edge[]): Map<string, number> {
   const depthMap = new Map<string, number>();
   const containsChildren = new Map<string, string[]>();
@@ -110,7 +106,6 @@ function computeNestingDepth(nodes: Node[], edges: Edge[]): Map<string, number> 
     }
   }
 
-  // Find roots: nodes that are CONTAINS sources but not targets
   const nodeIds = new Set(nodes.map((n) => n.id));
   const roots: string[] = [];
   for (const id of nodeIds) {
@@ -119,7 +114,6 @@ function computeNestingDepth(nodes: Node[], edges: Edge[]): Map<string, number> 
     }
   }
 
-  // BFS from roots
   const queue: Array<{ id: string; depth: number }> = roots.map((id) => ({ id, depth: 0 }));
   while (queue.length > 0) {
     const { id, depth } = queue.shift()!;
@@ -136,16 +130,12 @@ function computeNestingDepth(nodes: Node[], edges: Edge[]): Map<string, number> 
   return depthMap;
 }
 
-/**
- * Inject synthetic START and END terminal nodes into the flow graph.
- */
 function injectTerminalMarkers(
   nodes: Node[],
   edges: Edge[],
 ): { nodes: Node[]; edges: Edge[] } {
   if (nodes.length === 0) return { nodes, edges };
 
-  // Find root: a CONTAINS source that is not a CONTAINS target
   const containsSources = new Set<string>();
   const containsTargets = new Set<string>();
   const containsFirstChild = new Map<string, string>();
@@ -170,11 +160,9 @@ function injectTerminalMarkers(
 
   if (!rootId) return { nodes, edges };
 
-  // Find first child of root (entry point of control flow)
   const firstChildId = containsFirstChild.get(rootId);
   if (!firstChildId) return { nodes, edges };
 
-  // Find terminal nodes: nodes with no outgoing NEXT edges (excluding root and external nodes)
   const hasOutgoingNext = new Set<string>();
   for (const e of edges) {
     if (e.type === "NEXT") {
@@ -232,7 +220,6 @@ function injectTerminalMarkers(
   };
 }
 
-/** Build folder/file hierarchy from module nodes for the file tree view. */
 function buildFileTree(
   moduleNodes: GraphNode[],
   moduleEdges: GraphEdge[],
@@ -363,6 +350,18 @@ function Breadcrumb() {
   );
 }
 
+/** Fetch usages for a node and expand them inline in the graph. */
+async function fetchUsages(nodeName: string): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] } | null> {
+  try {
+    const res = await fetch(`/api/v1/graph/usages/${encodeURIComponent(nodeName)}?direction=in`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { nodes: GraphNode[]; edges: GraphEdge[] };
+    return data.nodes.length > 0 ? data : null;
+  } catch {
+    return null;
+  }
+}
+
 function GraphCanvasInner() {
   const { zoom } = useViewport();
   const { fitView } = useReactFlow();
@@ -376,11 +375,13 @@ function GraphCanvasInner() {
   const drillIntoClass = useGraphStore((s) => s.drillIntoClass);
   const drillIntoFunction = useGraphStore((s) => s.drillIntoFunction);
   const drillIntoVariable = useGraphStore((s) => s.drillIntoVariable);
+  const goBack = useGraphStore((s) => s.goBack);
+  const goForward = useGraphStore((s) => s.goForward);
 
   const openFile = useEditorStore((s) => s.openFile);
   const requestRevealLine = useEditorStore((s) => s.requestRevealLine);
 
-  // Control flow toggle — default to control flow view in function-detail mode
+  // Control flow is the default view
   const [showControlFlow, setShowControlFlow] = useState(true);
 
   // Data fetching — only the active view's hook is enabled
@@ -409,6 +410,22 @@ function GraphCanvasInner() {
   useEffect(() => {
     setZoomLevel(zoom);
   }, [zoom, setZoomLevel]);
+
+  // === Keyboard shortcuts: Cmd+[ / Cmd+] for back/forward ===
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key === "[") {
+        e.preventDefault();
+        goBack();
+      } else if (e.key === "]") {
+        e.preventDefault();
+        goForward();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [goBack, goForward]);
 
   // === Level 1: File tree ===
   const fileTree = useMemo(() => {
@@ -447,21 +464,15 @@ function GraphCanvasInner() {
     setLayoutVersion((v) => v + 1);
   }, [classDetailData, viewMode]);
 
-  // === Level 3a: Function detail — control flow view ===
+  // === Level 3a: Function detail — control flow view (DEFAULT) ===
   useEffect(() => {
     if (viewMode !== "function-detail" || !showControlFlow || !controlFlowData) return;
     const rawNodes = toFlowNodes(controlFlowData.nodes, true);
     const rawEdges = toFlowEdges(controlFlowData.edges);
 
-    // Inject entry/exit terminal markers
     const { nodes: withTerminals, edges: edgesWithTerminals } = injectTerminalMarkers(rawNodes, rawEdges);
-
     const laid = computeControlFlowLayout(withTerminals, edgesWithTerminals);
-
-    // Compute nesting depth and inject into node data
     const depthMap = computeNestingDepth(laid, edgesWithTerminals);
-
-    // Detect duplicate branches and merge into node data
     const dupeMap = detectDuplicateBranches(laid, edgesWithTerminals);
     const withData = laid.map((n) => {
       const group = dupeMap.get(n.id);
@@ -503,7 +514,7 @@ function GraphCanvasInner() {
     setLayoutVersion((v) => v + 1);
   }, [variableData, viewMode]);
 
-  // === Level 5: Query result (ad-hoc from terminal) ===
+  // === Level 5: Query result / expanded usages ===
   useEffect(() => {
     if (viewMode !== "query-result" || !queryResultData) return;
     const rawNodes = toFlowNodes(queryResultData.nodes);
@@ -584,10 +595,10 @@ function GraphCanvasInner() {
   );
 
   const handleNodeClick = useCallback(
-    (_event: React.MouseEvent, node: Node) => {
+    (event: React.MouseEvent, node: Node) => {
       if (node.type === "Folder") return;
-      selectNode(node.id);
 
+      const isMetaClick = event.metaKey || event.ctrlKey;
       const modulePath = typeof node.data.module_path === "string"
         ? node.data.module_path
         : "";
@@ -600,7 +611,56 @@ function GraphCanvasInner() {
           ? node.data.line
           : null;
 
-      // Open the file in editor and scroll to line
+      selectNode(node.id);
+
+      // ---------------------------------------------------------------
+      // Cmd+Click on a Function/Class: expand usages inline (neo4j-style)
+      // Adds new nodes/edges to the current canvas without changing view
+      // ---------------------------------------------------------------
+      if (isMetaClick && (node.type === "Function" || node.type === "Class")) {
+        // Open file + scroll in editor
+        if (modulePath) openFile(modulePath);
+        if (startLine !== null) {
+          requestRevealLine(startLine);
+          const endLine = typeof node.data.end_line === "number" ? node.data.end_line : startLine;
+          useEditorStore.getState().setHighlightedLines({ start: startLine, end: endLine });
+        }
+        // Fetch usages and merge into current canvas
+        void (async () => {
+          const data = await fetchUsages(nodeName);
+          if (!data) return;
+          const newFlowNodes = toFlowNodes(data.nodes);
+          const newFlowEdges = toFlowEdges(data.edges);
+          setNodes((prev) => {
+            const existingIds = new Set(prev.map((n) => n.id));
+            const toAdd = newFlowNodes.filter((n) => !existingIds.has(n.id));
+            // Position new nodes around the clicked node
+            const cx = node.position.x;
+            const cy = node.position.y;
+            const positioned = toAdd.map((n, i) => ({
+              ...n,
+              position: {
+                x: cx + 250 + (i % 3) * 200,
+                y: cy - 100 + Math.floor(i / 3) * 120,
+              },
+            }));
+            return [...prev, ...positioned];
+          });
+          setEdges((prev) => {
+            const existingKeys = new Set(prev.map((e) => `${e.source}-${e.type}-${e.target}`));
+            const toAdd = newFlowEdges.filter((e) => {
+              const key = `${e.source}-${e.type}-${e.target}`;
+              return !existingKeys.has(key);
+            });
+            return [...prev, ...toAdd];
+          });
+        })();
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Normal Click: open file in editor + navigate graph
+      // ---------------------------------------------------------------
       if (modulePath) {
         openFile(modulePath);
       }
@@ -634,14 +694,17 @@ function GraphCanvasInner() {
         (viewMode === "file-members" || viewMode === "function-detail") &&
         (node.type === "Function" || node.type === "Class")
       ) {
-        drillIntoFunction(nodeName, modulePath);
+        if (node.type === "Function") {
+          drillIntoFunction(nodeName, modulePath);
+        } else {
+          drillIntoClass(nodeName, modulePath);
+        }
       } else if (
         (viewMode === "function-detail" || viewMode === "file-members") &&
         node.type === "Variable"
       ) {
         drillIntoVariable(nodeName, modulePath);
       } else if (viewMode === "query-result") {
-        // In query-result mode, clicking any entity drills into it
         if (node.type === "Module") {
           const fileName = modulePath.split("/").pop() ?? nodeName;
           drillIntoFile(modulePath, fileName);
