@@ -6,6 +6,7 @@ import { useGraphStore } from "@/store/graphStore";
 import { useFileContent } from "@/api/client";
 import { getOrCreateModel } from "@/editor/ModelManager";
 import MutationGutter from "./MutationGutter";
+import type { GraphNode, GraphEdge } from "@/types/graph";
 
 interface GraphNodeResponse {
   id: string;
@@ -13,8 +14,20 @@ interface GraphNodeResponse {
   properties: Record<string, string | number | boolean | null>;
 }
 
+interface UsagesResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 let definitionProviderRegistered = false;
 let editorOpenerRegistered = false;
+
+/**
+ * Stash of resolved definition targets keyed by "filePath:line".
+ * The DefinitionProvider populates this, the EditorOpener reads it
+ * to know which node the user navigated to and fetches its usages graph.
+ */
+const resolvedTargets = new Map<string, string>(); // "path:line" → qualified node name
 
 function CodeEditor() {
   const activeFile = useEditorStore((s) => s.activeFile);
@@ -57,7 +70,7 @@ function CodeEditor() {
       });
       monaco.editor.setTheme("bumblebee-dark");
 
-      // Intercept "open editor" requests from go-to-definition so we navigate using our stores
+      // Intercept navigation from go-to-definition — open file, scroll, and show usages graph
       if (!editorOpenerRegistered) {
         editorOpenerRegistered = true;
         monaco.editor.registerEditorOpener({
@@ -67,56 +80,44 @@ function CodeEditor() {
             selectionOrPosition?: Monaco.IRange | Monaco.IPosition,
           ) {
             const filePath = resource.path.startsWith("/") ? resource.path.slice(1) : resource.path;
-            if (filePath) {
-              useEditorStore.getState().openFile(filePath);
-              if (selectionOrPosition && "startLineNumber" in selectionOrPosition) {
-                useEditorStore.getState().requestRevealLine(selectionOrPosition.startLineNumber);
-              } else if (selectionOrPosition && "lineNumber" in selectionOrPosition) {
-                useEditorStore.getState().requestRevealLine(selectionOrPosition.lineNumber);
-              }
-              // Also navigate the graph — find the node at this location
+            if (!filePath) return true;
+
+            // Open file and scroll
+            useEditorStore.getState().openFile(filePath);
+            const line = selectionOrPosition && "startLineNumber" in selectionOrPosition
+              ? selectionOrPosition.startLineNumber
+              : selectionOrPosition && "lineNumber" in selectionOrPosition
+                ? selectionOrPosition.lineNumber
+                : null;
+            if (line !== null) {
+              useEditorStore.getState().requestRevealLine(line);
+            }
+
+            // Look up which node this target corresponds to and show its usages graph
+            const targetKey = `${filePath}:${line ?? 0}`;
+            const nodeName = resolvedTargets.get(targetKey);
+            if (nodeName) {
               void (async () => {
-                const line = selectionOrPosition && "startLineNumber" in selectionOrPosition
-                  ? selectionOrPosition.startLineNumber
-                  : selectionOrPosition && "lineNumber" in selectionOrPosition
-                    ? selectionOrPosition.lineNumber
-                    : null;
-                if (!line) return;
                 try {
-                  const res = await fetch(`/api/v1/graph/file-members/${filePath}`);
-                  if (!res.ok) return;
-                  const data = (await res.json()) as { nodes: GraphNodeResponse[] };
-                  let best: GraphNodeResponse | null = null;
-                  let bestSpan = Infinity;
-                  for (const n of data.nodes) {
-                    const sl = typeof n.properties["start_line"] === "number" ? n.properties["start_line"] : null;
-                    const el = typeof n.properties["end_line"] === "number" ? n.properties["end_line"] : null;
-                    if (sl !== null && el !== null && sl <= line && el >= line) {
-                      const span = el - sl;
-                      if (span < bestSpan) { bestSpan = span; best = n; }
-                    }
-                  }
-                  if (best) {
-                    const mp = typeof best.properties["module_path"] === "string" ? best.properties["module_path"] : filePath;
-                    // First navigate to file in graph
-                    const fileName = filePath.split("/").pop() ?? filePath;
-                    useGraphStore.getState().drillIntoFile(filePath, fileName);
-                    // Then drill into the function/class
-                    if (best.label === "Function") {
-                      useGraphStore.getState().drillIntoFunction(best.id, mp);
-                    } else if (best.label === "Class") {
-                      useGraphStore.getState().drillIntoClass(best.id, mp);
+                  const res = await fetch(`/api/v1/graph/usages/${encodeURIComponent(nodeName)}`);
+                  if (res.ok) {
+                    const usages = (await res.json()) as UsagesResponse;
+                    if (usages.nodes.length > 0) {
+                      const shortName = nodeName.split(".").pop() ?? nodeName;
+                      useGraphStore.getState().showQueryResult(shortName, usages.nodes, usages.edges);
                     }
                   }
                 } catch { /* non-critical */ }
               })();
             }
-            return true; // We handled it
+
+            return true;
           },
         });
       }
 
-      // Register go-to-definition provider backed by the code graph
+      // Cmd+Click / Ctrl+Click: resolve symbol to graph nodes
+      // Returns ALL matches — Monaco shows a picker if ambiguous, single-click if unique
       if (!definitionProviderRegistered) {
         definitionProviderRegistered = true;
         monaco.languages.registerDefinitionProvider("python", {
@@ -125,40 +126,56 @@ function CodeEditor() {
             if (!word) return null;
             const symbol = word.word;
 
-            // Query the graph for nodes matching this symbol name
             try {
-              const res = await fetch("/api/v1/query", {
+              // Find all graph nodes matching this symbol
+              const allNodes: GraphNodeResponse[] = [];
+
+              // 1. suffix match: module.Class.symbol
+              const res1 = await fetch("/api/v1/query", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                  cypher: `MATCH (n) WHERE n.name ENDS WITH '.${symbol}' AND (n:Function OR n:Class) RETURN n LIMIT 5`,
+                  cypher: `MATCH (n) WHERE n.name ENDS WITH '.${symbol}' AND (n:Function OR n:Class) RETURN n LIMIT 10`,
                 }),
               });
-              if (!res.ok) return null;
-              const data = (await res.json()) as { nodes: GraphNodeResponse[] };
-              if (data.nodes.length === 0) {
-                // Try exact name match
+              if (res1.ok) {
+                const data = (await res1.json()) as { nodes: GraphNodeResponse[] };
+                allNodes.push(...data.nodes);
+              }
+
+              // 2. exact match: just "symbol" (for top-level functions/modules)
+              if (allNodes.length === 0) {
                 const res2 = await fetch("/api/v1/query", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
-                    cypher: `MATCH (n) WHERE n.name = '${symbol}' AND (n:Function OR n:Class OR n:Module) RETURN n LIMIT 5`,
+                    cypher: `MATCH (n) WHERE n.name = '${symbol}' AND (n:Function OR n:Class OR n:Module) RETURN n LIMIT 10`,
                   }),
                 });
-                if (!res2.ok) return null;
-                const data2 = (await res2.json()) as { nodes: GraphNodeResponse[] };
-                if (data2.nodes.length === 0) return null;
-                data.nodes = data2.nodes;
+                if (res2.ok) {
+                  const data = (await res2.json()) as { nodes: GraphNodeResponse[] };
+                  allNodes.push(...data.nodes);
+                }
               }
 
-              const results: Monaco.languages.Location[] = [];
-              for (const node of data.nodes) {
+              if (allNodes.length === 0) return null;
+
+              // Build definition locations and stash node names for the EditorOpener
+              resolvedTargets.clear();
+              const locations: Monaco.languages.Location[] = [];
+
+              for (const node of allNodes) {
                 const mp = node.properties["module_path"];
                 const sl = node.properties["start_line"];
+                const name = typeof node.properties["name"] === "string"
+                  ? node.properties["name"] as string
+                  : node.id;
+
                 if (typeof mp === "string" && typeof sl === "number") {
-                  const uri = monaco.Uri.parse(`file://${mp}`);
-                  results.push({
-                    uri,
+                  const targetKey = `${mp}:${sl}`;
+                  resolvedTargets.set(targetKey, name);
+                  locations.push({
+                    uri: monaco.Uri.parse(`file://${mp}`),
                     range: {
                       startLineNumber: sl,
                       startColumn: 1,
@@ -169,7 +186,26 @@ function CodeEditor() {
                 }
               }
 
-              return results.length > 0 ? results : null;
+              // If only one match, also eagerly show its usages graph
+              if (locations.length === 1 && allNodes.length === 1) {
+                const nodeName = typeof allNodes[0]!.properties["name"] === "string"
+                  ? allNodes[0]!.properties["name"] as string
+                  : allNodes[0]!.id;
+                void (async () => {
+                  try {
+                    const usagesRes = await fetch(`/api/v1/graph/usages/${encodeURIComponent(nodeName)}`);
+                    if (usagesRes.ok) {
+                      const usages = (await usagesRes.json()) as UsagesResponse;
+                      if (usages.nodes.length > 0) {
+                        const shortName = nodeName.split(".").pop() ?? nodeName;
+                        useGraphStore.getState().showQueryResult(shortName, usages.nodes, usages.edges);
+                      }
+                    }
+                  } catch { /* non-critical */ }
+                })();
+              }
+
+              return locations.length > 0 ? locations : null;
             } catch {
               return null;
             }

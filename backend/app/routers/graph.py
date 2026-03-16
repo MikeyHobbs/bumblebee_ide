@@ -245,6 +245,84 @@ async def get_class_detail(class_name: str) -> SubgraphResponse:
         raise HTTPException(status_code=500, detail=f"Graph query failed: {exc}") from exc
 
 
+@router.get("/graph/usages/{node_name:path}", response_model=SubgraphResponse)
+async def get_usages(node_name: str) -> SubgraphResponse:
+    """Get all usages of a node: who calls it, imports it, inherits it, reads it, etc.
+
+    Returns the target node at the center plus all nodes that reference it
+    via incoming edges, and edges between those referencing nodes.
+
+    Args:
+        node_name: Fully qualified node name (e.g. ``module.Class.method``).
+    """
+    try:
+        graph = get_graph()
+        nodes: list[GraphNodeResponse] = []
+        edges: list[GraphEdgeResponse] = []
+        seen: set[str] = set()
+
+        # The target node itself
+        target_result = graph.query(
+            "MATCH (n) WHERE n.name = $name AND (n:Function OR n:Class OR n:Module OR n:Variable) "
+            "RETURN n LIMIT 1",
+            params={"name": node_name},
+        )
+        if not target_result.result_set:
+            return SubgraphResponse(nodes=[], edges=[])
+
+        target_resp = _node_to_response(target_result.result_set[0][0])
+        seen.add(target_resp.id)
+        nodes.append(target_resp)
+
+        # All incoming edges: who CALLS, IMPORTS, INHERITS, READS, ASSIGNS, MUTATES, etc.
+        in_result = graph.query(
+            "MATCH (src)-[r]->(n {name: $name}) RETURN src, r, n",
+            params={"name": node_name},
+        )
+        for row in in_result.result_set:
+            src_resp = _node_to_response(row[0])
+            if src_resp.id not in seen:
+                seen.add(src_resp.id)
+                nodes.append(src_resp)
+            edges.append(_extract_edge(row[1], row[0], row[2]))
+
+        # All outgoing edges from the target (what it calls, defines, etc.)
+        out_result = graph.query(
+            "MATCH (n {name: $name})-[r]->(dst) "
+            "WHERE dst:Function OR dst:Class OR dst:Module OR dst:Variable "
+            "RETURN n, r, dst",
+            params={"name": node_name},
+        )
+        for row in out_result.result_set:
+            dst_resp = _node_to_response(row[2])
+            if dst_resp.id not in seen:
+                seen.add(dst_resp.id)
+                nodes.append(dst_resp)
+            edges.append(_extract_edge(row[1], row[0], row[2]))
+
+        # Edges between the usage nodes themselves (e.g. callers that also call each other)
+        if len(seen) > 2:
+            name_list = list(seen)
+            cross_result = graph.query(
+                "MATCH (a)-[r]->(b) "
+                "WHERE a.name IN $names AND b.name IN $names "
+                "AND NOT (a.name = $target AND b.name = $target) "
+                "RETURN a, r, b",
+                params={"names": name_list, "target": node_name},
+            )
+            edge_keys: set[str] = {f"{e.source}-{e.type}-{e.target}" for e in edges}
+            for row in cross_result.result_set:
+                edge_resp = _extract_edge(row[1], row[0], row[2])
+                key = f"{edge_resp.source}-{edge_resp.type}-{edge_resp.target}"
+                if key not in edge_keys:
+                    edge_keys.add(key)
+                    edges.append(edge_resp)
+
+        return SubgraphResponse(nodes=nodes, edges=edges)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Graph query failed: {exc}") from exc
+
+
 @router.get("/graph/function/{function_name:path}", response_model=SubgraphResponse)
 async def get_function_detail(
     function_name: str,
