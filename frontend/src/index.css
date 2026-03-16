@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+:root {
+  /* Base palette */
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #111111;
+  --bg-tertiary: #1a1a1a;
+  --border: #222222;
+  --border-focus: #444444;
+  --text-primary: #e0e0e0;
+  --text-secondary: #777777;
+  --text-muted: #444444;
+
+  /* Semantic - Graph nodes */
+  --node-module: #555555;
+  --node-class: #5b8dd9;
+  --node-function: #4ec990;
+  --node-variable: #e8a838;
+
+  /* Semantic - Graph edges */
+  --edge-structural: #333333;
+  --edge-mutation: #d94444;
+  --edge-assign: #4ec990;
+  --edge-pass: #e8a838;
+  --edge-read: #5b8dd9;
+
+  /* Ghost preview */
+  --ghost-add: #4ec99066;
+  --ghost-remove: #d9444466;
+
+  /* Terminal/Chat */
+  --prompt: #4ec990;
+  --system: #777777;
+  --tool-call: #e8a838;
+  --tool-result: #5b8dd9;
+  --error: #d94444;
+  --success: #4ec990;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", "SF Mono", "Consolas", monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-tertiary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-focus);
+  border-radius: 3px;
+}
+
+/* Edge dash animation */
+@keyframes dash {
+  to {
+    stroke-dashoffset: -9;
+  }
+}
