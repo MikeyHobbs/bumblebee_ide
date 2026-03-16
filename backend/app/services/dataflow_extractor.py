@@ -45,6 +45,7 @@ def extract_passes_to(
     structural_nodes: list[ParsedNode],
     source: str,
     file_path: str,
+    tree: tree_sitter.Tree | None = None,
 ) -> list[DataFlowEdge]:
     """Extract PASSES_TO edges by matching call arguments to callee parameters.
 
@@ -57,12 +58,14 @@ def extract_passes_to(
         structural_nodes: Structural nodes (for parameter info).
         source: Source code text.
         file_path: File path.
+        tree: Optional pre-parsed tree-sitter Tree. If None, parses source internally.
 
     Returns:
         List of PASSES_TO edges.
     """
-    parser = _get_parser()
-    tree = parser.parse(source.encode("utf-8"))
+    if tree is None:
+        parser = _get_parser()
+        tree = parser.parse(source.encode("utf-8"))
 
     var_map = {v.name: v for v in variable_nodes}
     func_map = {n.name: n for n in structural_nodes if n.node_type == "Function"}
@@ -193,6 +196,7 @@ def extract_feeds(
     source: str,
     file_path: str,
     structural_nodes: list[ParsedNode],
+    tree: tree_sitter.Tree | None = None,
 ) -> list[DataFlowEdge]:
     """Extract FEEDS edges: when a read of one variable feeds into assignment/mutation of another.
 
@@ -202,12 +206,14 @@ def extract_feeds(
         source: Source code text.
         file_path: File path.
         structural_nodes: Structural nodes.
+        tree: Optional pre-parsed tree-sitter Tree. If None, parses source internally.
 
     Returns:
         List of FEEDS edges.
     """
-    parser = _get_parser()
-    tree = parser.parse(source.encode("utf-8"))
+    if tree is not None:
+        pass  # tree not used by extract_feeds but accepted for API consistency
+    # No tree-sitter usage in this function — the original parsed but never used it
 
     var_map = {v.name: v for v in variable_nodes}
     func_map = {n.name: n for n in structural_nodes if n.node_type == "Function"}
@@ -294,6 +300,7 @@ def extract_dataflow(
     call_edges: list[RelationshipEdge],
     variable_nodes: list[VariableNode],
     variable_edges: list[VariableEdge],
+    tree: tree_sitter.Tree | None = None,
 ) -> DataFlowResult:
     """Extract all data flow edges (PASSES_TO and FEEDS).
 
@@ -304,6 +311,7 @@ def extract_dataflow(
         call_edges: CALLS relationship edges.
         variable_nodes: Variable nodes.
         variable_edges: Variable interaction edges.
+        tree: Optional pre-parsed tree-sitter Tree. If None, parses source internally.
 
     Returns:
         DataFlowResult with all data flow edges.
@@ -311,11 +319,11 @@ def extract_dataflow(
     all_edges: list[DataFlowEdge] = []
 
     # PASSES_TO: cross-function argument passing
-    passes_to = extract_passes_to(call_edges, variable_nodes, structural_nodes, source, file_path)
+    passes_to = extract_passes_to(call_edges, variable_nodes, structural_nodes, source, file_path, tree=tree)
     all_edges.extend(passes_to)
 
     # FEEDS: intra-function data flow
-    feeds = extract_feeds(variable_edges, variable_nodes, source, file_path, structural_nodes)
+    feeds = extract_feeds(variable_edges, variable_nodes, source, file_path, structural_nodes, tree=tree)
     all_edges.extend(feeds)
 
     return DataFlowResult(edges=all_edges)

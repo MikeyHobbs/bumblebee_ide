@@ -7,6 +7,9 @@ import StatementNode from "./StatementNode";
 import ControlFlowNode from "./ControlFlowNode";
 import BranchNode from "./BranchNode";
 import VariablePill from "./VariablePill";
+import FolderNode from "./FolderNode";
+import LoopGroupNode from "./LoopGroupNode";
+import TerminalNode from "./TerminalNode";
 
 export const nodeTypes: NodeTypes = {
   Module: ModuleNode,
@@ -17,4 +20,7 @@ export const nodeTypes: NodeTypes = {
   ControlFlow: ControlFlowNode,
   Branch: BranchNode,
   VariablePill: VariablePill,
+  Folder: FolderNode,
+  LoopGroup: LoopGroupNode,
+  Terminal: TerminalNode,
 };

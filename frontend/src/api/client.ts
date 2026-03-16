@@ -5,6 +5,7 @@ import {
 } from "@tanstack/react-query";
 import type {
   GraphNode,
+  GraphEdge,
   LogicPack,
   MutationTimeline,
   VariableSearchResult,
@@ -28,18 +29,21 @@ export function useGraphNodes(
   label?: string,
   limit = 100,
   offset = 0,
+  refetchInterval?: number | false,
 ) {
   return useQuery({
     queryKey: ["graph-nodes", label, limit, offset],
-    queryFn: () => {
+    queryFn: async (): Promise<GraphNodesResponse> => {
       const params = new URLSearchParams();
       if (label) params.set("label", label);
       params.set("limit", String(limit));
       params.set("offset", String(offset));
-      return apiFetch<GraphNodesResponse>(
+      const nodes = await apiFetch<GraphNode[]>(
         `/api/v1/graph/nodes?${params.toString()}`,
       );
+      return { nodes, total: nodes.length };
     },
+    refetchInterval: refetchInterval ?? false,
   });
 }
 
@@ -96,24 +100,97 @@ export function useVariableSearch(name: string, scope?: string) {
   });
 }
 
-interface IndexResponse {
+interface IndexJobResponse {
+  job_id: string;
   status: string;
-  nodes_created: number;
-  edges_created: number;
 }
 
 export function useIndexRepository() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (repoPath: string) =>
-      apiFetch<IndexResponse>("/api/v1/index", {
+    mutationFn: async (repoPath: string): Promise<IndexJobResponse> => {
+      const res = await fetch("/api/v1/index", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: repoPath }),
-      }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "Unknown error");
+        throw new Error(`API ${res.status}: ${text}`);
+      }
+      return res.json() as Promise<IndexJobResponse>;
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["graph-nodes"] });
     },
+  });
+}
+
+interface SubgraphResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+export function useModuleGraph(refetchInterval?: number | false) {
+  return useQuery({
+    queryKey: ["module-graph"],
+    queryFn: () => apiFetch<SubgraphResponse>("/api/v1/graph/modules"),
+    refetchInterval: refetchInterval ?? false,
+  });
+}
+
+export function useFileMembers(modulePath: string | null) {
+  return useQuery({
+    queryKey: ["file-members", modulePath],
+    queryFn: () =>
+      apiFetch<SubgraphResponse>(
+        `/api/v1/graph/file-members/${modulePath!}`,
+      ),
+    enabled: modulePath !== null,
+  });
+}
+
+export function useFunctionDetail(functionName: string | null) {
+  return useQuery({
+    queryKey: ["function-detail", functionName],
+    queryFn: () =>
+      apiFetch<SubgraphResponse>(
+        `/api/v1/graph/function/${encodeURIComponent(functionName!)}`,
+      ),
+    enabled: functionName !== null,
+  });
+}
+
+export function useFunctionControlFlow(functionName: string | null) {
+  return useQuery({
+    queryKey: ["function-control-flow", functionName],
+    queryFn: () =>
+      apiFetch<SubgraphResponse>(
+        `/api/v1/graph/function/${encodeURIComponent(functionName!)}?include_flow=true`,
+      ),
+    enabled: functionName !== null,
+  });
+}
+
+export function useClassDetail(className: string | null) {
+  return useQuery({
+    queryKey: ["class-detail", className],
+    queryFn: () =>
+      apiFetch<SubgraphResponse>(
+        `/api/v1/graph/class/${encodeURIComponent(className!)}`,
+      ),
+    enabled: className !== null,
+  });
+}
+
+export function useVariableDetail(variableName: string | null) {
+  return useQuery({
+    queryKey: ["variable-detail", variableName],
+    queryFn: () =>
+      apiFetch<SubgraphResponse>(
+        `/api/v1/graph/variable/${encodeURIComponent(variableName!)}`,
+      ),
+    enabled: variableName !== null,
   });
 }
 

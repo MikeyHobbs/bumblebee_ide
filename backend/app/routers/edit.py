@@ -104,7 +104,7 @@ async def create_statement(request: InsertStatementRequest) -> dict[str, str]:
         if request.after_statement_id:
             graph = get_graph()
             func_result = graph.query(
-                "MATCH (f:Function)-[:CONTAINS*1..3]->(s {name: $name}) RETURN f.name",
+                "MATCH (f:Function)-[:CONTAINS*1..8]->(s {name: $name}) RETURN f.name",
                 params={"name": request.after_statement_id},
             )
             if not func_result.result_set:

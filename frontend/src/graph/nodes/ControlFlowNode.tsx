@@ -4,6 +4,7 @@ import type { NodeProps } from "@xyflow/react";
 function ControlFlowNode({ data }: NodeProps) {
   const condition = typeof data.label === "string" ? data.label : "?";
   const kind = typeof data.kind === "string" ? data.kind : "if";
+  const highlighted = data.highlighted === true;
 
   return (
     <div
@@ -15,8 +16,8 @@ function ControlFlowNode({ data }: NodeProps) {
         <polygon
           points="60,2 118,40 60,78 2,40"
           fill="var(--bg-secondary)"
-          stroke="var(--node-variable)"
-          strokeWidth="1"
+          stroke={highlighted ? "var(--node-function)" : "var(--node-variable)"}
+          strokeWidth={highlighted ? 2 : 1}
         />
         <text
           x="60"

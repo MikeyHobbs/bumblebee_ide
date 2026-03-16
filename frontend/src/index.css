@@ -127,3 +127,8 @@ body {
 .react-flow__controls button svg {
   fill: var(--text-primary);
 }
+
+/* Graph ↔ Editor highlight */
+.graph-highlight-line {
+  background: rgba(78, 201, 144, 0.08);
+}

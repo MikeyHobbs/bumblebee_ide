@@ -5,23 +5,38 @@ interface CursorPosition {
   column: number;
 }
 
+interface LineRange {
+  start: number;
+  end: number;
+}
+
 interface EditorState {
   activeFile: string | null;
   openFiles: string[];
   cursorPosition: CursorPosition;
+  revealLine: number | null;
   pinnedFiles: Set<string>;
+  highlightedLines: LineRange | null;
+  selectedRange: LineRange | null;
   openFile: (path: string) => void;
   closeFile: (path: string) => void;
   setActiveFile: (path: string | null) => void;
   setCursorPosition: (pos: CursorPosition) => void;
+  requestRevealLine: (line: number) => void;
+  clearRevealLine: () => void;
   pinFile: (path: string) => void;
+  setHighlightedLines: (range: LineRange | null) => void;
+  setSelectedRange: (range: LineRange | null) => void;
 }
 
 export const useEditorStore = create<EditorState>((set) => ({
   activeFile: null,
   openFiles: [],
   cursorPosition: { line: 1, column: 1 },
+  revealLine: null,
   pinnedFiles: new Set<string>(),
+  highlightedLines: null,
+  selectedRange: null,
   openFile: (path) =>
     set((state) => {
       if (state.openFiles.includes(path)) {
@@ -46,6 +61,8 @@ export const useEditorStore = create<EditorState>((set) => ({
     }),
   setActiveFile: (path) => set({ activeFile: path }),
   setCursorPosition: (pos) => set({ cursorPosition: pos }),
+  requestRevealLine: (line) => set({ revealLine: line }),
+  clearRevealLine: () => set({ revealLine: null }),
   pinFile: (path) =>
     set((state) => {
       const next = new Set(state.pinnedFiles);
@@ -56,4 +73,6 @@ export const useEditorStore = create<EditorState>((set) => ({
       }
       return { pinnedFiles: next };
     }),
+  setHighlightedLines: (range) => set({ highlightedLines: range }),
+  setSelectedRange: (range) => set({ selectedRange: range }),
 }));

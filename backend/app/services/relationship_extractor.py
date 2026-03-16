@@ -346,6 +346,7 @@ def extract_relationships(
     source: str,
     file_path: str,
     structural_nodes: list[ParsedNode],
+    tree: tree_sitter.Tree | None = None,
 ) -> list[RelationshipEdge]:
     """Extract all relationship edges from a parsed Python file.
 
@@ -356,12 +357,14 @@ def extract_relationships(
         source: The Python source code.
         file_path: The file path (for module name derivation).
         structural_nodes: Previously extracted structural nodes (Module, Class, Function).
+        tree: Optional pre-parsed tree-sitter Tree. If None, parses source internally.
 
     Returns:
         List of all relationship edges found.
     """
-    parser = _get_parser()
-    tree = parser.parse(source.encode("utf-8"))
+    if tree is None:
+        parser = _get_parser()
+        tree = parser.parse(source.encode("utf-8"))
     root = tree.root_node
 
     module_name = file_path.replace("/", ".").replace("\\", ".").removesuffix(".py")

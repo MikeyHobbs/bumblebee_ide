@@ -23,8 +23,8 @@ export function computeForceLayout(
 
   const simNodes: SimNode[] = nodes.map((n) => ({
     id: n.id,
-    x: n.position.x || Math.random() * 600,
-    y: n.position.y || Math.random() * 400,
+    x: n.position.x || Math.random() * 800,
+    y: n.position.y || Math.random() * 600,
   }));
 
   const simLinks: SimLink[] = edges.map((e) => ({
@@ -37,11 +37,11 @@ export function computeForceLayout(
       "link",
       forceLink<SimNode, SimLink>(simLinks)
         .id((d) => d.id)
-        .distance(120),
+        .distance(200),
     )
-    .force("charge", forceManyBody().strength(-300))
+    .force("charge", forceManyBody().strength(-600))
     .force("center", forceCenter(400, 300))
-    .force("collide", forceCollide(60))
+    .force("collide", forceCollide(100))
     .stop();
 
   for (let i = 0; i < 300; i++) {

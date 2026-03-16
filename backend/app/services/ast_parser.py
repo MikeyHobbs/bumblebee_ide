@@ -80,10 +80,15 @@ class ParseResult:
     module_path: str
 
 
+_parser_instance: tree_sitter.Parser | None = None
+
+
 def _get_parser() -> tree_sitter.Parser:
-    """Create and return a tree-sitter parser configured for Python."""
-    lang = tree_sitter.Language(tree_sitter_python.language())
-    return tree_sitter.Parser(lang)
+    """Return a cached tree-sitter parser configured for Python."""
+    global _parser_instance  # pylint: disable=global-statement  # Singleton for performance
+    if _parser_instance is None:
+        _parser_instance = tree_sitter.Parser(tree_sitter.Language(tree_sitter_python.language()))
+    return _parser_instance
 
 
 def compute_checksum(source: str) -> str:
@@ -172,7 +177,7 @@ def _extract_params(node: tree_sitter.Node) -> list[str]:
     return params
 
 
-def parse_file(source: str, file_path: str) -> ParseResult:
+def parse_file(source: str, file_path: str, tree: tree_sitter.Tree | None = None) -> ParseResult:
     """Parse a Python source file and extract structural nodes and edges.
 
     Walks the tree-sitter AST to find module, class, and function definitions.
@@ -181,12 +186,14 @@ def parse_file(source: str, file_path: str) -> ParseResult:
     Args:
         source: The Python source code as a string.
         file_path: The file path (used as module_path and to derive the module name).
+        tree: Optional pre-parsed tree-sitter Tree. If None, parses source internally.
 
     Returns:
         ParseResult with all extracted nodes, edges, and a SHA-256 checksum.
     """
-    parser = _get_parser()
-    tree = parser.parse(source.encode("utf-8"))
+    if tree is None:
+        parser = _get_parser()
+        tree = parser.parse(source.encode("utf-8"))
     root = tree.root_node
 
     checksum = compute_checksum(source)

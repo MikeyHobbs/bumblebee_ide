@@ -3,7 +3,6 @@ import type { NodeProps } from "@xyflow/react";
 
 function ModuleNode({ data }: NodeProps) {
   const name = typeof data.label === "string" ? data.label : "module";
-  const truncated = name.length > 24 ? name.slice(0, 21) + "..." : name;
 
   return (
     <div
@@ -15,9 +14,9 @@ function ModuleNode({ data }: NodeProps) {
         minWidth: 100,
       }}
     >
-      <Handle type="target" position={Position.Top} className="opacity-0" />
-      <div className="text-center">{truncated}</div>
-      <Handle type="source" position={Position.Bottom} className="opacity-0" />
+      <Handle type="target" position={Position.Left} className="opacity-0" />
+      <div className="text-center">{name}</div>
+      <Handle type="source" position={Position.Right} className="opacity-0" />
     </div>
   );
 }

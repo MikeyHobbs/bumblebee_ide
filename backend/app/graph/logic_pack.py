@@ -340,7 +340,7 @@ def build_function_flow_pack(function_name: str) -> LogicPack:
 
     # CONTAINS children (recursive up to 3 levels)
     contains_result = graph.query(
-        "MATCH (f:Function {name: $name})-[:CONTAINS*1..3]->(child) RETURN child",
+        "MATCH (f:Function {name: $name})-[:CONTAINS*1..8]->(child) RETURN child",
         params={"name": function_name},
     )
     for row in contains_result.result_set:

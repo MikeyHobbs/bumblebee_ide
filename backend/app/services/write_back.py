@@ -309,7 +309,7 @@ def _get_containing_function(statement_name: str) -> str | None:
     """
     graph = get_graph()
     result = graph.query(
-        "MATCH (f:Function)-[:CONTAINS*1..3]->(s {name: $name}) RETURN f.name",
+        "MATCH (f:Function)-[:CONTAINS*1..8]->(s {name: $name}) RETURN f.name",
         params={"name": statement_name},
     )
     if result.result_set:

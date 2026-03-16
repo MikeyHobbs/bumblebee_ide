@@ -7,7 +7,7 @@ import TabBar from "./TabBar";
 import Breadcrumbs from "./Breadcrumbs";
 import { useLayoutStore } from "@/store/layoutStore";
 
-function ResizeHandle({
+function HResizeHandle({
   onDrag,
 }: {
   onDrag: (deltaX: number) => void;
@@ -49,52 +49,93 @@ function ResizeHandle({
   );
 }
 
+function VResizeHandle({
+  onDrag,
+}: {
+  onDrag: (deltaY: number) => void;
+}) {
+  const dragging = useRef(false);
+  const lastY = useRef(0);
+
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      dragging.current = true;
+      lastY.current = e.clientY;
+
+      const handleMouseMove = (ev: MouseEvent) => {
+        if (!dragging.current) return;
+        const delta = ev.clientY - lastY.current;
+        lastY.current = ev.clientY;
+        onDrag(delta);
+      };
+
+      const handleMouseUp = () => {
+        dragging.current = false;
+        document.removeEventListener("mousemove", handleMouseMove);
+        document.removeEventListener("mouseup", handleMouseUp);
+      };
+
+      document.addEventListener("mousemove", handleMouseMove);
+      document.addEventListener("mouseup", handleMouseUp);
+    },
+    [onDrag],
+  );
+
+  return (
+    <div
+      className="h-1 cursor-row-resize flex-shrink-0 hover:bg-[var(--border-focus)]"
+      style={{ background: "var(--border)" }}
+      onMouseDown={handleMouseDown}
+    />
+  );
+}
+
 function Layout() {
   const graphWidth = useLayoutStore((s) => s.graphPanelWidth);
-  const editorWidth = useLayoutStore((s) => s.editorPanelWidth);
+  const topRowHeight = useLayoutStore((s) => s.topRowHeight);
   const setPanelWidth = useLayoutStore((s) => s.setPanelWidth);
+  const setTopRowHeight = useLayoutStore((s) => s.setTopRowHeight);
   const collapsedPanels = useLayoutStore((s) => s.collapsedPanels);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(0);
 
   const measureContainer = useCallback((el: HTMLDivElement | null) => {
     if (el) {
       containerRef.current = el;
       setContainerWidth(el.clientWidth);
+      setContainerHeight(el.clientHeight);
       const observer = new ResizeObserver((entries) => {
         const entry = entries[0];
         if (entry) {
           setContainerWidth(entry.contentRect.width);
+          setContainerHeight(entry.contentRect.height);
         }
       });
       observer.observe(el);
     }
   }, []);
 
-  const handleLeftResize = useCallback(
+  const handleHResize = useCallback(
     (deltaX: number) => {
       if (containerWidth === 0) return;
       const pctDelta = (deltaX / containerWidth) * 100;
-      const newGraph = Math.max(15, Math.min(60, graphWidth + pctDelta));
-      const newEditor = Math.max(15, editorWidth - pctDelta);
+      const newGraph = Math.max(20, Math.min(80, graphWidth + pctDelta));
       setPanelWidth("graph", newGraph);
-      setPanelWidth("editor", newEditor);
     },
-    [containerWidth, graphWidth, editorWidth, setPanelWidth],
+    [containerWidth, graphWidth, setPanelWidth],
   );
 
-  const handleRightResize = useCallback(
-    (deltaX: number) => {
-      if (containerWidth === 0) return;
-      const pctDelta = (deltaX / containerWidth) * 100;
-      const termWidth = 100 - graphWidth - editorWidth;
-      const newEditor = Math.max(15, Math.min(60, editorWidth + pctDelta));
-      const newTerm = Math.max(15, termWidth - pctDelta);
-      setPanelWidth("editor", newEditor);
-      setPanelWidth("terminal", newTerm);
+  const handleVResize = useCallback(
+    (deltaY: number) => {
+      if (containerHeight === 0) return;
+      const pctDelta = (deltaY / containerHeight) * 100;
+      const newTop = Math.max(20, Math.min(85, topRowHeight + pctDelta));
+      setTopRowHeight(newTop);
     },
-    [containerWidth, graphWidth, editorWidth, setPanelWidth],
+    [containerHeight, topRowHeight, setTopRowHeight],
   );
 
   const graphCollapsed = collapsedPanels.has("graph");
@@ -102,56 +143,57 @@ function Layout() {
   const terminalCollapsed = collapsedPanels.has("terminal");
 
   const effectiveGraph = graphCollapsed ? 0 : graphWidth;
-  const effectiveEditor = editorCollapsed ? 0 : editorWidth;
-  const effectiveTerm = terminalCollapsed
-    ? 0
-    : 100 - effectiveGraph - effectiveEditor;
+  const effectiveEditor = editorCollapsed ? 0 : 100 - effectiveGraph;
+  const effectiveTopHeight = terminalCollapsed ? 100 : topRowHeight;
 
   return (
     <div
       ref={measureContainer}
-      className="flex h-screen w-screen overflow-hidden"
+      className="flex flex-col h-screen w-screen overflow-hidden"
       style={{ background: "var(--bg-primary)" }}
     >
-      {!graphCollapsed && (
-        <div
-          className="flex flex-col overflow-hidden"
-          style={{ width: `${effectiveGraph}%` }}
-        >
-          <Breadcrumbs />
-          <div className="flex-1 overflow-hidden">
-            <ReactFlowProvider>
-              <GraphCanvas />
-            </ReactFlowProvider>
+      {/* Top row: Graph + Editor side-by-side */}
+      <div
+        className="flex overflow-hidden flex-shrink-0"
+        style={{ height: `${effectiveTopHeight}%` }}
+      >
+        {!graphCollapsed && (
+          <div
+            className="flex flex-col overflow-hidden"
+            style={{ width: `${effectiveGraph}%` }}
+          >
+            <Breadcrumbs />
+            <div className="flex-1 overflow-hidden">
+              <ReactFlowProvider>
+                <GraphCanvas />
+              </ReactFlowProvider>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {!graphCollapsed && !editorCollapsed && (
-        <ResizeHandle onDrag={handleLeftResize} />
-      )}
+        {!graphCollapsed && !editorCollapsed && (
+          <HResizeHandle onDrag={handleHResize} />
+        )}
 
-      {!editorCollapsed && (
-        <div
-          className="flex flex-col overflow-hidden"
-          style={{ width: `${effectiveEditor}%` }}
-        >
-          <TabBar />
-          <div className="flex-1 overflow-hidden">
-            <CodeEditor />
+        {!editorCollapsed && (
+          <div
+            className="flex flex-col overflow-hidden"
+            style={{ width: `${effectiveEditor}%` }}
+          >
+            <TabBar />
+            <div className="flex-1 overflow-hidden">
+              <CodeEditor />
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {!editorCollapsed && !terminalCollapsed && (
-        <ResizeHandle onDrag={handleRightResize} />
-      )}
+      {/* Vertical resize handle */}
+      {!terminalCollapsed && <VResizeHandle onDrag={handleVResize} />}
 
+      {/* Bottom row: Terminal full-width */}
       {!terminalCollapsed && (
-        <div
-          className="flex flex-col overflow-hidden"
-          style={{ width: `${effectiveTerm}%` }}
-        >
+        <div className="flex-1 overflow-hidden min-h-0">
           <TerminalChat />
         </div>
       )}

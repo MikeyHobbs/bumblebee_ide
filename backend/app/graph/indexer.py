@@ -2,20 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from app.graph import queries
+from app.graph.batch_upsert import BatchUpserter
 from app.graph.client import get_graph
 from app.models.exceptions import IndexingError
-from app.services.ast_parser import ParsedNode, ParseResult, compute_checksum, parse_file
+from app.services.ast_parser import ParsedNode, ParseResult, _get_parser, compute_checksum, parse_file
+from app.services.dataflow_extractor import DataFlowEdge, extract_dataflow
 from app.services.relationship_extractor import RelationshipEdge, extract_relationships
 from app.services.statement_extractor import StatementEdge, StatementNode, extract_statements
 from app.services.variable_extractor import VariableEdge, VariableNode, VariableResult, extract_variables
-from app.services.dataflow_extractor import DataFlowEdge, extract_dataflow
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Individual upsert helpers (kept for backward compatibility / file watcher)
+# ---------------------------------------------------------------------------
 
 
 def _upsert_node(graph, node: ParsedNode, checksum: str = "") -> None:  # type: ignore[no-untyped-def]
@@ -296,6 +304,11 @@ def _upsert_dataflow_edge(graph, edge: DataFlowEdge) -> None:  # type: ignore[no
         )
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
 def _delete_module_nodes(graph, module_path: str) -> None:  # type: ignore[no-untyped-def]
     """Delete all nodes belonging to a module (for re-indexing).
 
@@ -322,10 +335,16 @@ def _get_module_checksum(graph, module_path: str) -> str | None:  # type: ignore
     return None
 
 
-def index_file(file_path: str, repo_root: str = "") -> ParseResult:
-    """Index a single Python file into the graph.
+# ---------------------------------------------------------------------------
+# Batched file indexing
+# ---------------------------------------------------------------------------
 
-    Reads the file, parses its AST, and upserts nodes/edges to FalkorDB.
+
+def index_file(file_path: str, repo_root: str = "") -> ParseResult:
+    """Index a single Python file into the graph using batched upserts.
+
+    Reads the file, parses its AST once, and upserts all nodes/edges to FalkorDB
+    in ~16 batched UNWIND queries instead of hundreds of individual queries.
     Skips re-indexing if the file checksum has not changed.
 
     Args:
@@ -368,43 +387,79 @@ def index_file(file_path: str, repo_root: str = "") -> ParseResult:
     else:
         logger.info("Indexing new file: %s", rel_path)
 
-    result = parse_file(source, rel_path)
+    # Parse once, reuse tree for all extractors
+    parser = _get_parser()
+    tree = parser.parse(source.encode("utf-8"))
 
-    # Upsert all nodes
+    result = parse_file(source, rel_path, tree=tree)
+
+    # Use BatchUpserter for all graph writes
+    batch = BatchUpserter(graph)
+
+    # Add all structural nodes
     for node in result.nodes:
-        _upsert_node(graph, node, checksum=result.checksum)
+        batch.add_node(node, checksum=result.checksum)
 
-    # Upsert all structural edges (DEFINES)
+    # Add all structural edges (DEFINES)
     for edge in result.edges:
-        _upsert_edge(graph, edge)
+        batch.add_edge(edge)
 
-    # Extract and upsert relationship edges (CALLS, INHERITS, IMPORTS)
-    rel_edges = extract_relationships(source, rel_path, result.nodes)
+    # Extract relationships (CALLS, INHERITS, IMPORTS)
+    rel_edges = extract_relationships(source, rel_path, result.nodes, tree=tree)
     for rel_edge in rel_edges:
-        _upsert_relationship_edge(graph, rel_edge)
+        batch.add_relationship_edge(rel_edge)
 
-    # Extract and upsert statement-level nodes and edges (TICKET-104)
-    stmt_result = extract_statements(source, rel_path, result.nodes)
+    # Extract statement-level nodes and edges
+    stmt_result = extract_statements(source, rel_path, result.nodes, tree=tree)
     for stmt_node in stmt_result.nodes:
-        _upsert_statement_node(graph, stmt_node)
+        batch.add_statement_node(stmt_node)
     for stmt_edge in stmt_result.edges:
-        _upsert_statement_edge(graph, stmt_edge)
+        batch.add_statement_edge(stmt_edge)
 
-    # Extract and upsert variable nodes and edges (TICKET-201/202)
-    var_result = extract_variables(source, rel_path, result.nodes, stmt_result.nodes)
+    # Extract variable nodes and edges
+    var_result = extract_variables(source, rel_path, result.nodes, stmt_result.nodes, tree=tree)
     for var_node in var_result.nodes:
-        _upsert_variable_node(graph, var_node)
+        batch.add_variable_node(var_node)
     for var_edge in var_result.edges:
-        _upsert_variable_edge(graph, var_edge)
+        batch.add_variable_edge(var_edge)
 
-    # Extract and upsert data flow edges: PASSES_TO and FEEDS (TICKET-203/205)
+    # Extract data flow edges (PASSES_TO, FEEDS)
     df_result = extract_dataflow(
-        source, rel_path, result.nodes, rel_edges, var_result.nodes, var_result.edges
+        source, rel_path, result.nodes, rel_edges, var_result.nodes, var_result.edges, tree=tree
     )
     for df_edge in df_result.edges:
-        _upsert_dataflow_edge(graph, df_edge)
+        batch.add_dataflow_edge(df_edge)
+
+    # Flush all batched queries at once
+    batch.flush()
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Repository indexing (sync + async)
+# ---------------------------------------------------------------------------
+
+
+def _collect_python_files(repo_path: str) -> list[str]:
+    """Collect all Python file paths in a repository.
+
+    Args:
+        repo_path: Absolute path to the repository root.
+
+    Returns:
+        Sorted list of absolute file paths.
+    """
+    skip_dirs = {"__pycache__", "node_modules", ".venv", "venv"}
+    files: list[str] = []
+    for dirpath, _dirnames, filenames in os.walk(repo_path):
+        rel_dir = os.path.relpath(dirpath, repo_path)
+        if any(part.startswith(".") or part in skip_dirs for part in Path(rel_dir).parts):
+            continue
+        for filename in filenames:
+            if filename.endswith(".py"):
+                files.append(os.path.join(dirpath, filename))
+    return sorted(files)
 
 
 def index_repository(repo_path: str) -> dict[str, int]:
@@ -427,27 +482,62 @@ def index_repository(repo_path: str) -> dict[str, int]:
         raise IndexingError(f"Repository path does not exist: {repo_path}")
 
     stats: dict[str, int] = {"files_indexed": 0, "files_skipped": 0, "nodes_created": 0, "edges_created": 0}
-    skip_dirs = {"__pycache__", "node_modules", ".venv", "venv"}
+    files = _collect_python_files(repo_path)
 
-    for dirpath, _dirnames, filenames in os.walk(repo_path):
-        # Skip hidden dirs and common non-source dirs
-        rel_dir = os.path.relpath(dirpath, repo_path)
-        if any(part.startswith(".") or part in skip_dirs for part in Path(rel_dir).parts):
-            continue
-
-        for filename in filenames:
-            if not filename.endswith(".py"):
-                continue
-
-            abs_file = os.path.join(dirpath, filename)
-            try:
-                result = index_file(abs_file, repo_root=repo_path)
-                stats["files_indexed"] += 1
-                stats["nodes_created"] += len(result.nodes)
-                stats["edges_created"] += len(result.edges)
-            except IndexingError:
-                logger.exception("Failed to index: %s", abs_file)
-                stats["files_skipped"] += 1
+    for abs_file in files:
+        try:
+            result = index_file(abs_file, repo_root=repo_path)
+            stats["files_indexed"] += 1
+            stats["nodes_created"] += len(result.nodes)
+            stats["edges_created"] += len(result.edges)
+        except IndexingError:
+            logger.exception("Failed to index: %s", abs_file)
+            stats["files_skipped"] += 1
 
     logger.info("Indexing complete: %s", stats)
+    return stats
+
+
+async def index_repository_async(
+    repo_path: str,
+    progress_callback: Callable[[str, int, int], Awaitable[None]] | None = None,
+) -> dict[str, int]:
+    """Index all Python files in a repository asynchronously with progress reporting.
+
+    Runs file indexing in a thread pool to avoid blocking the event loop,
+    and invokes the progress callback after each file.
+
+    Args:
+        repo_path: Path to the repository root.
+        progress_callback: Optional async callback(file_path, done, total) for progress.
+
+    Returns:
+        Statistics dict with keys: files_indexed, files_skipped, nodes_created, edges_created.
+
+    Raises:
+        IndexingError: If the repository path does not exist.
+    """
+    repo_path = os.path.abspath(repo_path)
+    if not os.path.isdir(repo_path):
+        raise IndexingError(f"Repository path does not exist: {repo_path}")
+
+    stats: dict[str, int] = {"files_indexed": 0, "files_skipped": 0, "nodes_created": 0, "edges_created": 0}
+    files = _collect_python_files(repo_path)
+    total = len(files)
+
+    for i, abs_file in enumerate(files, 1):
+        try:
+            result = await asyncio.to_thread(index_file, abs_file, repo_path)
+            stats["files_indexed"] += 1
+            stats["nodes_created"] += len(result.nodes)
+            stats["edges_created"] += len(result.edges)
+        except IndexingError:
+            logger.exception("Failed to index: %s", abs_file)
+            stats["files_skipped"] += 1
+
+        if progress_callback is not None:
+            rel_file = os.path.relpath(abs_file, repo_path)
+            await progress_callback(rel_file, i, total)
+
+    logger.info("Async indexing complete: %s", stats)
     return stats

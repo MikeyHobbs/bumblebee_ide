@@ -17,10 +17,19 @@ export function useWebSocket(options?: UseWebSocketOptions) {
   const queryClient = useQueryClient();
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const optionsRef = useRef(options);
+  const closedIntentionally = useRef(false);
+  optionsRef.current = options;
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (
+      wsRef.current?.readyState === WebSocket.OPEN ||
+      wsRef.current?.readyState === WebSocket.CONNECTING
+    ) {
+      return;
+    }
 
+    closedIntentionally.current = false;
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws/graph`);
     wsRef.current = ws;
@@ -53,20 +62,26 @@ export function useWebSocket(options?: UseWebSocketOptions) {
                 ? wsEvent.payload["node_id"]
                 : null;
             if (nodeId !== null) {
-              options?.onNodePulse?.(nodeId);
+              optionsRef.current?.onNodePulse?.(nodeId);
             }
             break;
           }
           case "index:progress": {
-            const progress =
-              typeof wsEvent.payload["progress"] === "number"
-                ? wsEvent.payload["progress"]
+            const done =
+              typeof wsEvent.payload["done"] === "number"
+                ? wsEvent.payload["done"]
                 : 0;
-            const status =
-              typeof wsEvent.payload["status"] === "string"
-                ? wsEvent.payload["status"]
+            const total =
+              typeof wsEvent.payload["total"] === "number"
+                ? wsEvent.payload["total"]
+                : 1;
+            const file =
+              typeof wsEvent.payload["file"] === "string"
+                ? wsEvent.payload["file"]
                 : "";
-            options?.onIndexProgress?.(progress, status);
+            const progress = total > 0 ? done / total : 0;
+            const status = `${done}/${total} ${file}`;
+            optionsRef.current?.onIndexProgress?.(progress, status);
             break;
           }
         }
@@ -76,25 +91,30 @@ export function useWebSocket(options?: UseWebSocketOptions) {
     };
 
     ws.onclose = () => {
-      // Reconnect after delay
-      reconnectTimer.current = setTimeout(() => {
-        connect();
-      }, 3000);
+      wsRef.current = null;
+      if (!closedIntentionally.current) {
+        reconnectTimer.current = setTimeout(() => {
+          connect();
+        }, 3000);
+      }
     };
 
     ws.onerror = () => {
       ws.close();
     };
-  }, [queryClient, options]);
+  }, [queryClient]);
 
   useEffect(() => {
     connect();
     return () => {
+      closedIntentionally.current = true;
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = null;
       }
       if (wsRef.current) {
         wsRef.current.close();
+        wsRef.current = null;
       }
     };
   }, [connect]);

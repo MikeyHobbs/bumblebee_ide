@@ -721,6 +721,7 @@ def extract_variables(
     file_path: str,
     structural_nodes: list[ParsedNode],
     stmt_nodes: list[StatementNode] | None = None,
+    tree: tree_sitter.Tree | None = None,
 ) -> VariableResult:
     """Extract all Variable nodes and interaction edges from a Python file.
 
@@ -729,12 +730,14 @@ def extract_variables(
         file_path: The file path.
         structural_nodes: Previously extracted structural nodes.
         stmt_nodes: Optional statement nodes for PART_OF linking.
+        tree: Optional pre-parsed tree-sitter Tree. If None, parses source internally.
 
     Returns:
         VariableResult with all variable nodes and edges.
     """
-    parser = _get_parser()
-    tree = parser.parse(source.encode("utf-8"))
+    if tree is None:
+        parser = _get_parser()
+        tree = parser.parse(source.encode("utf-8"))
     root = tree.root_node
 
     variables: dict[str, VariableNode] = {}

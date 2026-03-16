@@ -1,7 +1,7 @@
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
 
-function AssignsEdge({
+function ReturnsEdge({
   sourceX,
   sourceY,
   targetX,
@@ -25,9 +25,9 @@ function AssignsEdge({
         path={edgePath}
         {...(markerEnd != null ? { markerEnd } : {})}
         style={{
-          stroke: "var(--edge-assign)",
+          stroke: "var(--node-function)",
           strokeWidth: 1.5,
-          strokeDasharray: "6 3",
+          strokeDasharray: "8 4",
         }}
       />
       <EdgeLabelRenderer>
@@ -40,17 +40,17 @@ function AssignsEdge({
             fontFamily: "monospace",
             fontWeight: 600,
             background: "var(--bg-secondary)",
-            color: "var(--edge-assign)",
+            color: "var(--node-function)",
             padding: "0 3px",
             borderRadius: 2,
-            border: "1px solid var(--edge-assign)",
+            border: "1px solid var(--node-function)",
           }}
         >
-          =
+          RET
         </div>
       </EdgeLabelRenderer>
     </>
   );
 }
 
-export default AssignsEdge;
+export default ReturnsEdge;

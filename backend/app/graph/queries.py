@@ -282,6 +282,199 @@ RETURN v
 LIMIT 50
 """
 
+# --- Batch UNWIND templates (for BatchUpserter) ---
+
+BATCH_MERGE_MODULES = """
+UNWIND $items AS item
+MERGE (m:Module {name: item.name})
+SET m.start_line = item.start_line,
+    m.end_line = item.end_line,
+    m.module_path = item.module_path,
+    m.checksum = item.checksum
+"""
+
+BATCH_MERGE_CLASSES = """
+UNWIND $items AS item
+MERGE (c:Class {name: item.name})
+SET c.start_line = item.start_line,
+    c.end_line = item.end_line,
+    c.start_col = item.start_col,
+    c.end_col = item.end_col,
+    c.source_text = item.source_text,
+    c.module_path = item.module_path,
+    c.decorators = item.decorators,
+    c.docstring = item.docstring
+"""
+
+BATCH_MERGE_FUNCTIONS = """
+UNWIND $items AS item
+MERGE (f:Function {name: item.name})
+SET f.start_line = item.start_line,
+    f.end_line = item.end_line,
+    f.start_col = item.start_col,
+    f.end_col = item.end_col,
+    f.source_text = item.source_text,
+    f.module_path = item.module_path,
+    f.params = item.params,
+    f.decorators = item.decorators,
+    f.docstring = item.docstring,
+    f.is_async = item.is_async
+"""
+
+BATCH_MERGE_DEFINES = """
+UNWIND $items AS item
+MATCH (parent {name: item.source_name})
+MATCH (child {name: item.target_name})
+MERGE (parent)-[:DEFINES]->(child)
+"""
+
+BATCH_MERGE_CALLS = """
+UNWIND $items AS item
+MATCH (caller:Function {name: item.source_name})
+MATCH (callee {name: item.target_name})
+MERGE (caller)-[r:CALLS {call_line: item.call_line}]->(callee)
+SET r.seq = item.seq,
+    r.call_order = item.call_order
+"""
+
+BATCH_MERGE_INHERITS = """
+UNWIND $items AS item
+MATCH (child:Class {name: item.source_name})
+MATCH (parent:Class {name: item.target_name})
+MERGE (child)-[:INHERITS]->(parent)
+"""
+
+BATCH_MERGE_IMPORTS = """
+UNWIND $items AS item
+MATCH (importer:Module {name: item.source_name})
+MATCH (imported:Module {name: item.target_name})
+MERGE (importer)-[r:IMPORTS]->(imported)
+SET r.alias = item.alias
+"""
+
+BATCH_MERGE_STATEMENTS = """
+UNWIND $items AS item
+MERGE (s:Statement {name: item.name})
+SET s.kind = item.kind,
+    s.source_text = item.source_text,
+    s.start_line = item.start_line,
+    s.end_line = item.end_line,
+    s.start_col = item.start_col,
+    s.end_col = item.end_col,
+    s.seq = item.seq,
+    s.module_path = item.module_path
+"""
+
+BATCH_MERGE_CONTROL_FLOWS = """
+UNWIND $items AS item
+MERGE (cf:ControlFlow {name: item.name})
+SET cf.kind = item.kind,
+    cf.condition_text = item.condition_text,
+    cf.source_text = item.source_text,
+    cf.start_line = item.start_line,
+    cf.end_line = item.end_line,
+    cf.start_col = item.start_col,
+    cf.end_col = item.end_col,
+    cf.seq = item.seq,
+    cf.module_path = item.module_path
+"""
+
+BATCH_MERGE_BRANCHES = """
+UNWIND $items AS item
+MERGE (b:Branch {name: item.name})
+SET b.kind = item.kind,
+    b.condition_text = item.condition_text,
+    b.source_text = item.source_text,
+    b.start_line = item.start_line,
+    b.end_line = item.end_line,
+    b.start_col = item.start_col,
+    b.end_col = item.end_col,
+    b.seq = item.seq,
+    b.module_path = item.module_path
+"""
+
+BATCH_MERGE_CONTAINS = """
+UNWIND $items AS item
+MATCH (parent {name: item.source_name})
+MATCH (child {name: item.target_name})
+MERGE (parent)-[:CONTAINS]->(child)
+"""
+
+BATCH_MERGE_NEXT = """
+UNWIND $items AS item
+MATCH (prev {name: item.source_name})
+MATCH (next {name: item.target_name})
+MERGE (prev)-[:NEXT]->(next)
+"""
+
+BATCH_MERGE_VARIABLES = """
+UNWIND $items AS item
+MERGE (v:Variable {name: item.name})
+SET v.scope = item.scope,
+    v.origin_line = item.origin_line,
+    v.origin_func = item.origin_func,
+    v.type_hint = item.type_hint,
+    v.module_path = item.module_path
+"""
+
+BATCH_MERGE_ASSIGNS = """
+UNWIND $items AS item
+MATCH (f:Function {name: item.source_name})
+MATCH (v:Variable {name: item.target_name})
+MERGE (f)-[r:ASSIGNS {line: item.line, seq: item.seq}]->(v)
+SET r.col = item.col,
+    r.is_rebind = item.is_rebind,
+    r.control_context = item.control_context,
+    r.branch = item.branch
+"""
+
+BATCH_MERGE_MUTATES = """
+UNWIND $items AS item
+MATCH (f:Function {name: item.source_name})
+MATCH (v:Variable {name: item.target_name})
+MERGE (f)-[r:MUTATES {line: item.line, seq: item.seq}]->(v)
+SET r.mutation_kind = item.mutation_kind,
+    r.control_context = item.control_context,
+    r.branch = item.branch
+"""
+
+BATCH_MERGE_READS = """
+UNWIND $items AS item
+MATCH (f:Function {name: item.source_name})
+MATCH (v:Variable {name: item.target_name})
+MERGE (f)-[r:READS {line: item.line, seq: item.seq}]->(v)
+SET r.control_context = item.control_context,
+    r.branch = item.branch
+"""
+
+BATCH_MERGE_RETURNS = """
+UNWIND $items AS item
+MATCH (f:Function {name: item.source_name})
+MATCH (v:Variable {name: item.target_name})
+MERGE (f)-[r:RETURNS {line: item.line, seq: item.seq}]->(v)
+SET r.control_context = item.control_context,
+    r.branch = item.branch
+"""
+
+BATCH_MERGE_PASSES_TO = """
+UNWIND $items AS item
+MATCH (src:Variable {name: item.source_name})
+MATCH (tgt:Variable {name: item.target_name})
+MERGE (src)-[r:PASSES_TO {call_line: item.call_line}]->(tgt)
+SET r.seq = item.seq,
+    r.arg_position = item.arg_position,
+    r.arg_keyword = item.arg_keyword
+"""
+
+BATCH_MERGE_FEEDS = """
+UNWIND $items AS item
+MATCH (src:Variable {name: item.source_name})
+MATCH (tgt:Variable {name: item.target_name})
+MERGE (src)-[r:FEEDS {line: item.line, seq: item.seq}]->(tgt)
+SET r.expression_text = item.expression_text,
+    r.via = item.via
+"""
+
 # TICKET-501: Logic Pack query templates
 
 GET_CALL_CHAIN = """
@@ -307,7 +500,7 @@ RETURN nodes(path) AS classes, collect(DISTINCT method) AS methods
 """
 
 GET_FUNCTION_FLOW = """
-MATCH (f:Function {name: $function_name})-[:CONTAINS*1..3]->(child)
+MATCH (f:Function {name: $function_name})-[:CONTAINS*1..8]->(child)
 OPTIONAL MATCH (child)-[next:NEXT]->(sibling)
 RETURN f, collect(DISTINCT child) AS children, collect(DISTINCT {source: child.name, target: sibling.name, type: 'NEXT'}) AS next_edges
 """

@@ -342,6 +342,53 @@
 
 ---
 
+## Epic 8: Layout & Terminal Navigation
+
+- [ ] **TICKET-701: Panel Layout — Terminal Bottom, Graph+Editor Top**
+    - **Goal:** Rearrange the workspace layout so the terminal spans the full width along the bottom, with the graph canvas and code editor splitting the top half side-by-side.
+    - **Tasks:**
+        - Refactor `Layout.tsx` from a 3-column layout to a 2-row layout: top row (graph + editor side-by-side with horizontal resize handle), bottom row (terminal spanning full width with vertical resize handle).
+        - Update `layoutStore.ts` to track `topRowHeight` / `terminalHeight` instead of three column widths. Keep horizontal resize between graph and editor panels.
+        - Add a vertical `ResizeHandle` between the top and bottom rows for adjusting terminal height.
+        - Ensure the terminal can be collapsed/expanded (double-click divider or keyboard shortcut).
+        - Maintain existing panel collapse behavior for graph and editor within the top row.
+    - **Acceptance Criteria:**
+        - Terminal spans the full width at the bottom of the viewport.
+        - Graph and editor sit side-by-side in the top portion.
+        - Both the vertical (top/bottom) and horizontal (graph/editor) dividers are draggable.
+        - Collapsing the terminal gives full height to the top row.
+
+- [ ] **TICKET-702: Terminal Graph Navigation — CLI Commands**
+    - **Goal:** Allow users to navigate the graph structure using terminal commands, with the graph canvas syncing to reflect the current position.
+    - **Tasks:**
+        - **Three input modes in one terminal:**
+            1. **CLI commands** (default) — filesystem-style navigation of the graph
+            2. **Cypher queries** (auto-detected when input starts with `MATCH`, `RETURN`, etc.) — runs directly against the graph DB
+            3. **Natural language** (prefix with `?` or `ask`) — routes to the LLM chat pipeline, e.g. `? where is the user object modified?` or `ask what functions call save_order?`
+        - **CLI navigation commands:**
+            - `ls` — list children of the current node (modules at root, classes/functions in a file, methods in a class, statements in a function)
+            - `cd <name>` — drill into a node (file, class, function). Supports `cd ..` to go up one level, `cd /` to return to root (modules view)
+            - `pwd` — print the current breadcrumb path (e.g., `/ > app/services/auth.py > AuthService > verify_token`)
+            - `cat <name>` — show the source text of a node (function body, class definition, statement)
+            - `tree` — show a tree view of children with their types (like `tree` in a filesystem)
+            - `find <pattern>` — search for nodes by name pattern within the current scope
+            - `info <name>` — show node properties (type, line numbers, edges)
+        - **Graph sync:** Each `cd` command triggers the corresponding store action (`drillIntoFile`, `drillIntoClass`, `drillIntoFunction`, `navigateTo`), so the graph canvas and breadcrumb update to match the terminal's position.
+        - **Reverse sync:** When the user clicks a node in the graph to drill in, update the terminal's current context so subsequent `ls`/`cd` commands operate from the new position.
+        - **Tab completion:** Pressing Tab in the terminal input auto-completes node names from the current scope (query the graph for children of the current node).
+        - **Formatting:** `ls` output uses color coding by node type (same colors as the graph: green for functions, blue for classes, etc.). Show line numbers and edge counts.
+    - **Acceptance Criteria:**
+        - `cd app/services/auth.py` from root drills into the file and the graph canvas shows the file-members view.
+        - `ls` inside a class shows its methods. `cd verify_token` enters the function and the graph shows function-detail view.
+        - `cd ..` from function-detail returns to the parent (class or file) and the graph updates accordingly.
+        - Clicking a node in the graph updates the terminal context — a subsequent `ls` lists that node's children.
+        - `? what calls verify_token` sends to the LLM and displays the response with tool call results.
+        - `MATCH (f:Function) RETURN f.name LIMIT 5` is auto-detected as Cypher and runs directly.
+        - `tree` produces a readable, indented, color-coded hierarchy.
+        - Tab completion works for node names in the current scope.
+
+---
+
 ## Execution Order
 
 ```
@@ -378,4 +425,6 @@ TICKET-101 (scaffold)
 
 **Phase 5 (live sync):** 601 → 602
 
-Phases 2, 3, 4 can begin in parallel once Phase 1 is complete. Phase 5 depends on Phases 2 and 3.
+**Phase 6 (layout + terminal nav):** 701 → 702
+
+Phases 2, 3, 4 can begin in parallel once Phase 1 is complete. Phase 5 depends on Phases 2 and 3. Phase 6 can begin any time after Phase 3 (requires the graph canvas and store infrastructure).

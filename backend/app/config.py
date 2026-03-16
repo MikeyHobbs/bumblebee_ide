@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     falkor_graph_name: str = "bumblebee"
     watch_path: str = ""
     ollama_host: str = "http://localhost:11434"
-    orchestrator_model: str = "qwen2.5-coder:7b"
-    cypher_model: str = "qwen2.5-coder:7b"
+    orchestrator_model: str = "llama3.2:latest"
+    cypher_model: str = "llama3.2:latest"
 
 
 settings = Settings()

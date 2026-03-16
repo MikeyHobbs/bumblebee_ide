@@ -590,6 +590,7 @@ def extract_statements(
     source: str,
     file_path: str,
     structural_nodes: list[ParsedNode],
+    tree: tree_sitter.Tree | None = None,
 ) -> StatementResult:
     """Extract all statement-level nodes and edges from a Python file.
 
@@ -600,12 +601,14 @@ def extract_statements(
         source: The Python source code.
         file_path: The file path.
         structural_nodes: Previously extracted structural nodes.
+        tree: Optional pre-parsed tree-sitter Tree. If None, parses source internally.
 
     Returns:
         StatementResult with all statement-level nodes and edges.
     """
-    parser = _get_parser()
-    tree = parser.parse(source.encode("utf-8"))
+    if tree is None:
+        parser = _get_parser()
+        tree = parser.parse(source.encode("utf-8"))
     root = tree.root_node
 
     all_nodes: list[StatementNode] = []

@@ -5,19 +5,22 @@ function FunctionNode({ data }: NodeProps) {
   const name = typeof data.label === "string" ? data.label : "fn";
   const params = typeof data.params === "string" ? data.params : "";
   const line = typeof data.line === "number" ? data.line : null;
+  const isExternal = data.external === true;
 
   return (
     <div
       className="px-3 py-2 text-sm font-mono border"
       style={{
         background: "var(--bg-secondary)",
-        borderColor: "var(--node-function)",
+        borderColor: isExternal ? "var(--text-muted)" : "var(--node-function)",
+        borderStyle: isExternal ? "dashed" : "solid",
         color: "var(--text-primary)",
+        opacity: isExternal ? 0.7 : 1,
         minWidth: 100,
       }}
     >
       <Handle type="target" position={Position.Top} className="opacity-0" />
-      <div className="font-semibold" style={{ color: "var(--node-function)" }}>
+      <div className="font-semibold" style={{ color: isExternal ? "var(--text-muted)" : "var(--node-function)" }}>
         {name}
         <span style={{ color: "var(--text-secondary)" }}>
           ({params})

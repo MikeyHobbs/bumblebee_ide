@@ -24,9 +24,9 @@ async def broadcast(event: str, data: dict[str, str | int | list[str] | None]) -
         event: Event name (e.g., "graph:updated", "node:pulse", "index:progress").
         data: Event payload.
     """
-    message = json.dumps({"event": event, "data": data})
+    message = json.dumps({"type": event, "payload": data})
     disconnected: list[WebSocket] = []
-    for client in _clients:
+    for client in list(_clients):
         try:
             await client.send_text(message)
         except Exception:  # pylint: disable=broad-except  # WebSocket may be closed
