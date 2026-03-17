@@ -10,7 +10,7 @@ from app.models.logic_models import (
     LogicNodeResponse,
     LogicNodeUpdate,
 )
-from app.services import logic_node_service
+from app.services.crud import logic_node_service
 
 router = APIRouter(prefix="/api/v1/nodes", tags=["logic-nodes"])
 

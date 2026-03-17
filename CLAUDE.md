@@ -23,15 +23,35 @@ backend/
     app/
         main.py            # FastAPI entrypoint
         routers/           # API route modules
-        services/          # Business logic
+        services/          # Business logic (organized by domain)
+            parsing/       # AST extraction pipeline (ast_parser, extractors)
+            persistence/   # Graph ↔ disk (serializer, deserializer, vfs_engine, import_pipeline)
+            crud/          # Node/edge/flow CRUD (logic_node_service, edge_service, flow_service)
+            codegen/       # Graph → source code (code_generator, write_back)
+            agent/         # LLM / tool-use (model_adapter, agent_tools_v2, tool_executor)
+            analysis/      # Diffing, gaps, hashing (semantic_diff, gap_analysis, hash_identity)
+            watchers/      # File system monitoring (file_watcher, bumblebee_watcher)
         models/            # Pydantic schemas & DB models
         graph/             # FalkorDB queries & Logic Pack builders
         utils/             # Reusable utilities
     tests/
         conftest.py
         test_*.py
-frontend/                  # Vite/React app
+frontend/
+    src/
+        api/               # API hooks (split by domain: graph, nodes, variables, flows, import, files)
+        components/        # UI components (organized by role)
+            canvas/        # Graph visualization (AtlasOverview, GraphCanvas)
+            panels/        # Side panels (CallContextSidebar, LogicPackPanel, SemanticDiff, etc.)
+            editor/        # Code editing (CodeEditor, FunctionFlowView)
+            chat/          # AI chat (TerminalChat)
+            layout/        # App shell (Layout, TabBar, Breadcrumbs)
+            pages/         # Full pages (LandingPage)
+        store/             # Zustand stores (graphStore, editorStore, layoutStore)
+        graph/             # React Flow node/edge types & layout algorithms
+        types/             # TypeScript type definitions
 docker/                    # Docker configs
+docs/                      # Architecture docs, schema spec, tickets
 ```
 
 ## Build & Development Commands
@@ -83,9 +103,9 @@ make test      # test backend
 
 ## Key Technical Decisions
 
-All architecture decisions are documented in `docs/decisions.md`. Key points:
+All architecture decisions are documented in `docs/decisions.md`. Graph schema is in `docs/schema.md`. Key points:
 
-- **Build order:** Phase 1 (backend): 101→102→103→201→202→203→204. Phase 2 (frontend): 301→302→401→402. Phase 3 (AI): 501→502. Phase 4 (live sync): 601→602.
+- **Build order (800-series):** Phase 0 (foundation) → Phase 1 (CRUD) → Phase 3 (import) → Phase 2 (serialization) → Phase 4 (VFS) → Phase 5 (flows) → Phase 6 (frontend) → Phase 7 (agent). See `docs/tickets.md` for details.
 - **React Flow v12** — not v11, not Cytoscape. Custom node/edge types are React components.
 - **Ollama** for local LLM with OpenAI-compatible tool-use format. Cloud fallback via `ModelAdapter` interface.
 - **Pydantic Settings v2** for all config. Import `settings` from `app.config`. Never read `os.environ` directly.

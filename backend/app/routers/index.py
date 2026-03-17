@@ -14,7 +14,7 @@ from app.config import settings
 from app.graph.indexer import index_file
 from app.models.exceptions import IndexingError
 from app.routers.websocket import broadcast
-from app.services.import_pipeline import import_directory
+from app.services.persistence.import_pipeline import import_directory
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ async def _run_index_job(job_id: str, repo_path: str) -> None:
 
         # Start file watcher for the indexed repo
         try:
-            from app.services.file_watcher import start_watcher  # pylint: disable=import-outside-toplevel
+            from app.services.watchers.file_watcher import start_watcher  # pylint: disable=import-outside-toplevel
 
             loop = asyncio.get_event_loop()
             start_watcher(repo_path, loop=loop)

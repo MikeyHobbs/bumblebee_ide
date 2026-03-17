@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from app.models.exceptions import EdgeNotFoundError, NodeNotFoundError
 from app.models.logic_models import EdgeCreate, EdgeResponse
-from app.services import edge_service
+from app.services.crud import edge_service
 from app.graph.client import get_graph
 from app.graph import logic_queries as lq
 

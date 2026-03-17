@@ -19,9 +19,9 @@ import pytest
 import tree_sitter
 import tree_sitter_python
 
-from app.services.ast_parser import ParseResult, parse_file, _get_parser
-from app.services.statement_extractor import extract_statements, StatementResult
-from app.services.code_generator import generate_from_extractions, generate_function
+from app.services.parsing.ast_parser import ParseResult, parse_file, _get_parser
+from app.services.parsing.statement_extractor import extract_statements, StatementResult
+from app.services.codegen.code_generator import generate_from_extractions, generate_function
 
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "roundtrip")

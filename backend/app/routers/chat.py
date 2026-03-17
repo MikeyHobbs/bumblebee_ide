@@ -14,9 +14,9 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.models.exceptions import ModelAdapterError
-from app.services.cypher_agent import SYSTEM_PROMPT as CYPHER_SYSTEM_PROMPT
-from app.services.model_adapter import get_adapter
-from app.services.tool_executor import TOOL_DEFINITIONS, execute_tool
+from app.services.agent.cypher_agent import SYSTEM_PROMPT as CYPHER_SYSTEM_PROMPT
+from app.services.agent.model_adapter import get_adapter
+from app.services.agent.tool_executor import TOOL_DEFINITIONS, execute_tool
 
 logger = logging.getLogger(__name__)
 

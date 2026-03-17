@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from app.graph.client import get_graph
 from app.graph.logic_pack import build_function_flow_pack
 from app.models.exceptions import NodeNotFoundError
-from app.services.write_back import (
+from app.services.codegen.write_back import (
     WriteBackError,
     delete_statement,
     insert_statement,
@@ -173,7 +173,7 @@ async def ghost_preview(request: GhostPreviewRequest) -> GhostPreviewResponse:
     shadow graph against the current graph.
     """
     try:
-        from app.services.ghost_preview import compute_ghost_preview
+        from app.services.analysis.ghost_preview import compute_ghost_preview
 
         result = compute_ghost_preview(request.path, request.old_text, request.new_text)
         return GhostPreviewResponse(**result)
@@ -185,7 +185,7 @@ async def ghost_preview(request: GhostPreviewRequest) -> GhostPreviewResponse:
 async def apply_edit(request: ApplyEditRequest) -> dict[str, str]:
     """Apply a previewed edit: write to disk and re-index."""
     try:
-        from app.services.ghost_preview import apply_edit as do_apply
+        from app.services.analysis.ghost_preview import apply_edit as do_apply
 
         result = do_apply(request.path, request.old_text, request.new_text)
         return result

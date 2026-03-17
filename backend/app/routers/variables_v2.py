@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.models.exceptions import NodeNotFoundError
 from app.models.logic_models import MutationTimeline, VariableResponse
-from app.services import variable_timeline_service
+from app.services.crud import variable_timeline_service
 
 router = APIRouter(prefix="/api/v1/variables", tags=["variables"])
 

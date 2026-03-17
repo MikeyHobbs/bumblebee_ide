@@ -15,7 +15,8 @@ from app.models.logic_models import (
     GapReport,
     LogicNodeResponse,
 )
-from app.services import flow_service, gap_analysis
+from app.services.crud import flow_service
+from app.services.analysis import gap_analysis
 
 router = APIRouter(prefix="/api/v1", tags=["flows"])
 

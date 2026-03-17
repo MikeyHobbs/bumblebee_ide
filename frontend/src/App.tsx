@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
-import LandingPage from "@/components/LandingPage";
-import Layout from "@/components/Layout";
+import LandingPage from "@/components/pages/LandingPage";
+import Layout from "@/components/layout/Layout";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useGraphStore } from "@/store/graphStore";
 

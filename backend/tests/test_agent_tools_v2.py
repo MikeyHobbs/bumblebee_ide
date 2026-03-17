@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch  # noqa: F401 — patch used via patch.dict
 
-from app.services.agent_tools_v2 import TOOL_DEFINITIONS, execute_tool
+from app.services.agent.agent_tools_v2 import TOOL_DEFINITIONS, execute_tool
 
 
 class TestToolDefinitions:
@@ -82,7 +82,7 @@ class TestExecuteTool:
     def test_find_node_dispatches_to_handler(self) -> None:
         """execute_tool('find_node', ...) must dispatch to the find_node handler."""
         mock_handler = MagicMock(return_value={"nodes": []})
-        with patch.dict("app.services.agent_tools_v2._TOOL_HANDLERS", {"find_node": mock_handler}):
+        with patch.dict("app.services.agent.agent_tools_v2._TOOL_HANDLERS", {"find_node": mock_handler}):
             result = execute_tool("find_node", {"query": "add"})
         mock_handler.assert_called_once_with({"query": "add"})
         assert result == {"nodes": []}
@@ -90,7 +90,7 @@ class TestExecuteTool:
     def test_get_node_dispatches_to_handler(self) -> None:
         """execute_tool('get_node', ...) must dispatch to the get_node handler."""
         mock_handler = MagicMock(return_value={"node": {"id": "abc"}})
-        with patch.dict("app.services.agent_tools_v2._TOOL_HANDLERS", {"get_node": mock_handler}):
+        with patch.dict("app.services.agent.agent_tools_v2._TOOL_HANDLERS", {"get_node": mock_handler}):
             result = execute_tool("get_node", {"node_id": "abc"})
         mock_handler.assert_called_once_with({"node_id": "abc"})
         assert result == {"node": {"id": "abc"}}
@@ -99,7 +99,7 @@ class TestExecuteTool:
         """execute_tool('create_node', ...) must dispatch to the create_node handler."""
         mock_handler = MagicMock(return_value={"node": {"id": "new-1"}})
         args = {"name": "foo", "kind": "function", "source_text": "def foo(): pass"}
-        with patch.dict("app.services.agent_tools_v2._TOOL_HANDLERS", {"create_node": mock_handler}):
+        with patch.dict("app.services.agent.agent_tools_v2._TOOL_HANDLERS", {"create_node": mock_handler}):
             result = execute_tool("create_node", args)
         mock_handler.assert_called_once_with(args)
         assert result == {"node": {"id": "new-1"}}
@@ -107,7 +107,7 @@ class TestExecuteTool:
     def test_deprecate_node_dispatches(self) -> None:
         """execute_tool('deprecate_node', ...) must dispatch correctly."""
         mock_handler = MagicMock(return_value={"status": "deprecated", "node_id": "n1"})
-        with patch.dict("app.services.agent_tools_v2._TOOL_HANDLERS", {"deprecate_node": mock_handler}):
+        with patch.dict("app.services.agent.agent_tools_v2._TOOL_HANDLERS", {"deprecate_node": mock_handler}):
             result = execute_tool("deprecate_node", {"node_id": "n1"})
         mock_handler.assert_called_once_with({"node_id": "n1"})
         assert result["status"] == "deprecated"
@@ -116,7 +116,7 @@ class TestExecuteTool:
         """execute_tool('add_edge', ...) must dispatch correctly."""
         mock_handler = MagicMock(return_value={"edge": {"type": "CALLS"}})
         args = {"source": "n1", "target": "n2", "type": "CALLS"}
-        with patch.dict("app.services.agent_tools_v2._TOOL_HANDLERS", {"add_edge": mock_handler}):
+        with patch.dict("app.services.agent.agent_tools_v2._TOOL_HANDLERS", {"add_edge": mock_handler}):
             result = execute_tool("add_edge", args)
         mock_handler.assert_called_once_with(args)
         assert result["edge"]["type"] == "CALLS"
@@ -125,14 +125,14 @@ class TestExecuteTool:
         """execute_tool('create_flow', ...) must dispatch correctly."""
         mock_handler = MagicMock(return_value={"flow": {"id": "f1"}})
         args = {"name": "test-flow", "node_ids": ["n1"], "entry_point": "n1"}
-        with patch.dict("app.services.agent_tools_v2._TOOL_HANDLERS", {"create_flow": mock_handler}):
+        with patch.dict("app.services.agent.agent_tools_v2._TOOL_HANDLERS", {"create_flow": mock_handler}):
             result = execute_tool("create_flow", args)
         mock_handler.assert_called_once_with(args)
         assert result["flow"]["id"] == "f1"
 
     def test_handler_exception_returns_error_dict(self) -> None:
         """If a handler raises, execute_tool must catch it and return an error dict."""
-        with patch.dict("app.services.agent_tools_v2._TOOL_HANDLERS", {"boom": MagicMock(side_effect=RuntimeError("fail"))}):
+        with patch.dict("app.services.agent.agent_tools_v2._TOOL_HANDLERS", {"boom": MagicMock(side_effect=RuntimeError("fail"))}):
             result = execute_tool("boom", {})
         assert "error" in result
         assert "fail" in result["error"]
@@ -140,7 +140,7 @@ class TestExecuteTool:
     def test_run_cypher_dispatches(self) -> None:
         """execute_tool('run_cypher', ...) must dispatch to the cypher handler."""
         mock_handler = MagicMock(return_value={"result_set": [["node-1"]]})
-        with patch.dict("app.services.agent_tools_v2._TOOL_HANDLERS", {"run_cypher": mock_handler}):
+        with patch.dict("app.services.agent.agent_tools_v2._TOOL_HANDLERS", {"run_cypher": mock_handler}):
             result = execute_tool("run_cypher", {"query": "MATCH (n) RETURN n LIMIT 1"})
         mock_handler.assert_called_once()
         assert result["result_set"] == [["node-1"]]
@@ -148,7 +148,7 @@ class TestExecuteTool:
     def test_project_vfs_dispatches(self) -> None:
         """execute_tool('project_vfs', ...) must dispatch correctly."""
         mock_handler = MagicMock(return_value={"source": "def foo(): pass"})
-        with patch.dict("app.services.agent_tools_v2._TOOL_HANDLERS", {"project_vfs": mock_handler}):
+        with patch.dict("app.services.agent.agent_tools_v2._TOOL_HANDLERS", {"project_vfs": mock_handler}):
             result = execute_tool("project_vfs", {"scope": "app.core"})
         mock_handler.assert_called_once_with({"scope": "app.core"})
         assert "source" in result
@@ -156,7 +156,7 @@ class TestExecuteTool:
     def test_find_gaps_dispatches(self) -> None:
         """execute_tool('find_gaps', ...) must dispatch correctly."""
         mock_handler = MagicMock(return_value={"nodes": []})
-        with patch.dict("app.services.agent_tools_v2._TOOL_HANDLERS", {"find_gaps": mock_handler}):
+        with patch.dict("app.services.agent.agent_tools_v2._TOOL_HANDLERS", {"find_gaps": mock_handler}):
             result = execute_tool("find_gaps", {"analysis_type": "dead_ends"})
         mock_handler.assert_called_once_with({"analysis_type": "dead_ends"})
         assert result == {"nodes": []}

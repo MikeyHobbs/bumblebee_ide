@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 
 from app.graph import queries
-from app.services.ast_parser import ParsedEdge, ParsedNode
-from app.services.dataflow_extractor import DataFlowEdge
-from app.services.relationship_extractor import RelationshipEdge
-from app.services.statement_extractor import StatementEdge, StatementNode
-from app.services.variable_extractor import VariableEdge, VariableNode
+from app.services.parsing.ast_parser import ParsedEdge, ParsedNode
+from app.services.parsing.dataflow_extractor import DataFlowEdge
+from app.services.parsing.relationship_extractor import RelationshipEdge
+from app.services.parsing.statement_extractor import StatementEdge, StatementNode
+from app.services.parsing.variable_extractor import VariableEdge, VariableNode
 
 logger = logging.getLogger(__name__)
 

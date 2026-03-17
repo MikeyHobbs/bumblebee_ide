@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException
 
-from app.services.import_pipeline import ImportReport, import_directory, import_file, import_incremental
+from app.services.persistence.import_pipeline import ImportReport, import_directory, import_file, import_incremental
 
 router = APIRouter(prefix="/api/v1/import", tags=["import"])
 

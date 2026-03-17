@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 
-from app.services.ast_parser import parse_file
-from app.services.statement_extractor import extract_statements
+from app.services.parsing.ast_parser import parse_file
+from app.services.parsing.statement_extractor import extract_statements
 
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "sample_repo")

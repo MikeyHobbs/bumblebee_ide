@@ -4,9 +4,9 @@
 
 ---
 
-## Phase 0: Foundation (Hash Identity + Schema)
+## Phase 0: Foundation (Hash Identity + Schema) — DONE
 
-### TICKET-800: Hash-Based Identity System
+### TICKET-800: Hash-Based Identity System — DONE
 
 **File:** `backend/app/services/hash_identity.py`
 
@@ -28,7 +28,7 @@
 
 ---
 
-### TICKET-801: FalkorDB Schema + Cypher Queries
+### TICKET-801: FalkorDB Schema + Cypher Queries — DONE
 
 **File:** `backend/app/graph/queries.py` (rewrite)
 
@@ -53,7 +53,7 @@
 
 ---
 
-### TICKET-802: Pydantic Models for LogicNode, Variable, Edge, Flow
+### TICKET-802: Pydantic Models for LogicNode, Variable, Edge, Flow — DONE
 
 **File:** `backend/app/models/logic_models.py`
 
@@ -84,9 +84,9 @@
 
 ---
 
-## Phase 1: Core Graph Operations
+## Phase 1: Core Graph Operations — DONE
 
-### TICKET-810: Logic Node CRUD Service
+### TICKET-810: Logic Node CRUD Service — DONE
 
 **File:** `backend/app/services/logic_node_service.py`
 
@@ -117,7 +117,7 @@
 
 ---
 
-### TICKET-811: Edge Service
+### TICKET-811: Edge Service — DONE
 
 **File:** `backend/app/services/edge_service.py`
 
@@ -140,7 +140,7 @@
 
 ---
 
-### TICKET-812: Variable Timeline Service
+### TICKET-812: Variable Timeline Service — DONE
 
 **File:** `backend/app/services/variable_timeline_service.py`
 
@@ -165,7 +165,7 @@
 
 ---
 
-### TICKET-813: REST API Endpoints
+### TICKET-813: REST API Endpoints — DONE
 
 **File:** `backend/app/routers/logic_nodes.py`, `backend/app/routers/edges.py`, `backend/app/routers/variables.py`
 
@@ -202,9 +202,9 @@
 
 ---
 
-## Phase 2: Serialization (Graph-to-Git)
+## Phase 2: Serialization (Graph-to-Git) — DONE
 
-### TICKET-820: Graph-to-Git Serializer
+### TICKET-820: Graph-to-Git Serializer — DONE
 
 **File:** `backend/app/services/serializer.py`
 
@@ -228,7 +228,7 @@
 
 ---
 
-### TICKET-821: Git-to-Graph Deserializer
+### TICKET-821: Git-to-Graph Deserializer — DONE
 
 **File:** `backend/app/services/deserializer.py`
 
@@ -251,7 +251,7 @@
 
 ---
 
-### TICKET-822: Semantic Diff Engine
+### TICKET-822: Semantic Diff Engine — DONE
 
 **File:** `backend/app/services/semantic_diff.py`
 
@@ -275,7 +275,7 @@
 
 ---
 
-### TICKET-823: File Watcher for `.bumblebee/` Directory
+### TICKET-823: File Watcher for `.bumblebee/` Directory — DONE
 
 **File:** `backend/app/services/bumblebee_watcher.py`
 
@@ -295,9 +295,9 @@
 
 ---
 
-## Phase 3: Import Pipeline
+## Phase 3: Import Pipeline — DONE
 
-### TICKET-830: Python-to-LogicNode Converter
+### TICKET-830: Python-to-LogicNode Converter — DONE
 
 **File:** `backend/app/services/import_pipeline.py`
 
@@ -327,7 +327,7 @@
 
 ---
 
-### TICKET-831: Import REST Endpoint
+### TICKET-831: Import REST Endpoint — DONE
 
 **File:** `backend/app/routers/import_router.py`
 
@@ -347,9 +347,9 @@
 
 ---
 
-## Phase 4: VFS Projection Engine
+## Phase 4: VFS Projection Engine — DONE
 
-### TICKET-840: VFS Engine (Graph-to-Files, Bidirectional)
+### TICKET-840: VFS Engine (Graph-to-Files, Bidirectional) — DONE
 
 **File:** `backend/app/services/vfs_engine.py`
 
@@ -386,7 +386,7 @@
 
 ---
 
-### TICKET-841: VFS REST Endpoints + Monaco Integration
+### TICKET-841: VFS REST Endpoints + Monaco Integration — DONE
 
 **File:** `backend/app/routers/vfs.py`
 
@@ -409,9 +409,9 @@
 
 ---
 
-## Phase 5: Flows & Gap Analysis
+## Phase 5: Flows & Gap Analysis — DONE
 
-### TICKET-850: Flow Service
+### TICKET-850: Flow Service — DONE
 
 **File:** `backend/app/services/flow_service.py`
 
@@ -447,7 +447,7 @@
 
 ---
 
-### TICKET-851: Gap Analysis Engine
+### TICKET-851: Gap Analysis Engine — DONE
 
 **File:** `backend/app/services/gap_analysis.py`
 
@@ -474,7 +474,7 @@
 
 ---
 
-### TICKET-852: Flow & Gap REST Endpoints
+### TICKET-852: Flow & Gap REST Endpoints — DONE
 
 **File:** `backend/app/routers/flows.py`, `backend/app/routers/gaps.py`
 
@@ -502,9 +502,9 @@
 
 ---
 
-## Phase 6: Frontend Adaptations
+## Phase 6: Frontend Adaptations — DONE
 
-### TICKET-860: TypeScript Type Updates
+### TICKET-860: TypeScript Type Updates — DONE
 
 **File:** `frontend/src/types/`
 
@@ -522,7 +522,7 @@
 
 ---
 
-### TICKET-861: LogicNode + Flow React Flow Components
+### TICKET-861: LogicNode + Flow React Flow Components — DONE
 
 **File:** `frontend/src/graph/nodes/`, `frontend/src/graph/edges/`
 
@@ -543,7 +543,7 @@
 
 ---
 
-### TICKET-862: Zustand Store Adaptations
+### TICKET-862: Zustand Store Adaptations — DONE
 
 **File:** `frontend/src/stores/`
 
@@ -563,7 +563,7 @@
 
 ---
 
-### TICKET-863: Semantic Diff Visualization
+### TICKET-863: Semantic Diff Visualization — DONE
 
 **File:** `frontend/src/components/SemanticDiff.tsx`
 
@@ -584,9 +584,9 @@
 
 ---
 
-## Phase 7: Agent Toolchain
+## Phase 7: Agent Toolchain — DONE (scaffolded)
 
-### TICKET-870: Agent Tool Executor
+### TICKET-870: Agent Tool Executor — DONE
 
 **File:** `backend/app/services/agent_tools.py`
 
@@ -622,7 +622,7 @@
 
 ---
 
-### TICKET-871: LLM-Powered Semantic Intent Generation
+### TICKET-871: LLM-Powered Semantic Intent Generation — DONE
 
 **File:** `backend/app/services/semantic_intent.py`
 
@@ -645,9 +645,9 @@
 
 ---
 
-## Phase 8: Documentation
+## Phase 8: Documentation — IN PROGRESS
 
-### TICKET-880: Rewrite `docs/manifesto.md`
+### TICKET-880: Rewrite `docs/manifesto.md` — DONE
 
 **Goal:** Replace the existing manifesto with the Code-as-Data vision.
 
@@ -657,7 +657,7 @@
 
 ---
 
-### TICKET-881: Update `docs/decisions.md`
+### TICKET-881: Update `docs/decisions.md` — BACKLOG
 
 **Goal:** Add new architecture decisions for the Code-as-Data refactor.
 
@@ -667,7 +667,7 @@
 
 ---
 
-### TICKET-882: Replace `docs/tickets.md`
+### TICKET-882: Replace `docs/tickets.md` — DONE
 
 **Goal:** Replace the existing ticket backlog with the 800-series phased plan.
 
@@ -677,7 +677,7 @@
 
 ---
 
-### TICKET-883: Create `docs/schema.md`
+### TICKET-883: Create `docs/schema.md` — DONE
 
 **Goal:** Full JSON schema specification for the `.bumblebee/` serialization format.
 
@@ -704,6 +704,60 @@ Phase 0 (foundation) ─┬─ Phase 1 (CRUD) ─┬─ Phase 3 (import) ──�
 Phase 8 (docs) → Phase 0 → Phase 1 → Phase 3 → Phase 2 → Phase 4 → Phase 5 → Phase 6 → Phase 7
 
 ---
+
+# Backlog
+
+## TICKET-701: Variable Data-Flow Tracing
+
+**Priority:** Backlog
+**Area:** Frontend + Backend
+
+Double-click a variable node to highlight its full data-flow path through the graph:
+
+- **Upstream:** where the variable's value originates (parameters, assignments, returns from other functions)
+- **Downstream:** where the variable flows to — function calls it's passed into, mutations applied to it, other variables it contributes to
+- Traces in both directions until exit of a flow
+
+**Starting points:**
+- Backend: transitive graph traversals over READS, MUTATES, PASSES_TO, RETURNS edges
+- Frontend: `traceVariable` store action and `traceRef` rendering path in `AtlasOverview.tsx`
+
+---
+
+## TICKET-702: Graph-Aware Function Editor Pane
+
+**Priority:** Backlog
+**Area:** Frontend + Backend
+
+Open a new Monaco editor pane for authoring functions that integrate directly with the graph:
+
+1. New Monaco pane (separate from the node source viewer) for writing new functions
+2. New functions auto-import into the graph as they're defined
+3. Fetch/browse existing functions from the graph to use in the editor
+4. Compose new functions by pulling in existing graph functions as building blocks
+
+**Starting points:**
+- Frontend: `@monaco-editor/react`, existing node source fetch (`/api/v1/nodes/:id`)
+- Backend: endpoint to register new functions into the graph, search endpoint for graph functions
+
+---
+
+## TICKET-703: Cypher Query Graph Filter
+
+**Priority:** Backlog
+**Area:** Frontend + Backend
+
+Run Cypher queries against FalkorDB and filter/highlight the Atlas graph view to show only matching results:
+
+1. Query input UI component
+2. Backend endpoint that proxies Cypher to FalkorDB and returns matching node/edge IDs
+3. Frontend filters the Sigma view to show/highlight matches (dim non-matches)
+4. Enables ad-hoc exploration: "show all functions that call X", "show all classes inheriting from Y"
+
+**Starting points:**
+- Frontend: `nodeReducer`/`edgeReducer` pattern in `AtlasOverview.tsx` (same as trace dimming)
+- Backend: FalkorDB client already available via FastAPI lifespan
+
 
 ## Verification Plan
 

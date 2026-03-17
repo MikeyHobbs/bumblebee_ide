@@ -13,7 +13,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.graph.client import init_client, close_client
 from app.routers.index import router as index_router
-from app.routers.variables import router as variables_router
 from app.routers.graph import router as graph_router
 from app.routers.logic_pack import router as logic_pack_router
 from app.routers.files import router as files_router
@@ -38,7 +37,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     # Initialize 800-series graph indexes
     try:
-        from app.services.logic_node_service import ensure_indexes
+        from app.services.crud.logic_node_service import ensure_indexes
         ensure_indexes()
         logger.info("800-series graph indexes initialized")
     except Exception:
@@ -47,7 +46,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # Start file watcher if watch_path is set
     if settings.watch_path:
         try:
-            from app.services.file_watcher import start_watcher
+            from app.services.watchers.file_watcher import start_watcher
 
             loop = asyncio.get_event_loop()
             start_watcher(settings.watch_path, loop=loop)
@@ -59,7 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     # Stop file watcher
     try:
-        from app.services.file_watcher import stop_watcher
+        from app.services.watchers.file_watcher import stop_watcher
 
         stop_watcher()
     except Exception:
@@ -84,7 +83,6 @@ app.add_middleware(
 )
 
 app.include_router(index_router)
-app.include_router(variables_router)
 app.include_router(graph_router)
 app.include_router(logic_pack_router)
 app.include_router(files_router)

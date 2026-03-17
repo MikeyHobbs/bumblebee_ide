@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from app.services.deserializer import deserialize_graph
-from app.services.serializer import serialize_graph
+from app.services.persistence.deserializer import deserialize_graph
+from app.services.persistence.serializer import serialize_graph
 
 
 def make_mock_node(props: dict) -> MagicMock:
@@ -50,7 +50,7 @@ def _make_query_dispatcher(
 class TestSerializeGraph:
     """Tests for serialize_graph writing the .bumblebee/ directory structure."""
 
-    @patch("app.services.serializer.get_graph")
+    @patch("app.services.persistence.serializer.get_graph")
     def test_creates_directory_structure(self, mock_get_graph: MagicMock, tmp_path: Path) -> None:
         """Serialization must create nodes/, variables/, edges/, flows/, vfs/ subdirectories."""
         mock_graph = MagicMock()
@@ -65,7 +65,7 @@ class TestSerializeGraph:
         assert (tmp_path / "flows").is_dir()
         assert (tmp_path / "vfs").is_dir()
 
-    @patch("app.services.serializer.get_graph")
+    @patch("app.services.persistence.serializer.get_graph")
     def test_meta_json_written_with_correct_counts(self, mock_get_graph: MagicMock, tmp_path: Path) -> None:
         """meta.json must contain correct node/edge/flow counts."""
         nodes = [
@@ -90,7 +90,7 @@ class TestSerializeGraph:
         assert report.nodes_written == 2
         assert report.edges_written == 1
 
-    @patch("app.services.serializer.get_graph")
+    @patch("app.services.persistence.serializer.get_graph")
     def test_node_json_files_contain_expected_fields(self, mock_get_graph: MagicMock, tmp_path: Path) -> None:
         """Each node JSON file must contain the id, name, kind, and source_text fields."""
         nodes = [
@@ -122,7 +122,7 @@ class TestSerializeGraph:
         assert data["kind"] == "function"
         assert data["source_text"] == "def process(): pass"
 
-    @patch("app.services.serializer.get_graph")
+    @patch("app.services.persistence.serializer.get_graph")
     def test_edge_manifest_has_correct_entries(self, mock_get_graph: MagicMock, tmp_path: Path) -> None:
         """Edge manifest.json must list all edges with type, source, target."""
         edges_data: list[list] = [
@@ -146,7 +146,7 @@ class TestSerializeGraph:
         assert manifest["edges"][1]["type"] == "DEPENDS_ON"
         assert report.edges_written == 2
 
-    @patch("app.services.serializer.get_graph")
+    @patch("app.services.persistence.serializer.get_graph")
     def test_serialization_report_counts(self, mock_get_graph: MagicMock, tmp_path: Path) -> None:
         """SerializationReport must accurately reflect written counts."""
         nodes = [{"id": "n1", "name": "a", "kind": "function", "source_text": "def a(): pass"}]
@@ -169,7 +169,7 @@ class TestSerializeGraph:
 class TestDeserializeGraph:
     """Tests for deserialize_graph loading .bumblebee/ directory into the graph."""
 
-    @patch("app.services.deserializer.get_graph")
+    @patch("app.services.persistence.deserializer.get_graph")
     def test_loads_nodes_and_calls_merge(self, mock_get_graph: MagicMock, tmp_path: Path) -> None:
         """Deserializer must call graph.query with MERGE_LOGIC_NODE for each node file."""
         mock_graph = MagicMock()
@@ -201,7 +201,7 @@ class TestDeserializeGraph:
         ]
         assert len(merge_calls) == 1
 
-    @patch("app.services.deserializer.get_graph")
+    @patch("app.services.persistence.deserializer.get_graph")
     def test_loads_edges_from_manifest(self, mock_get_graph: MagicMock, tmp_path: Path) -> None:
         """Deserializer must load edges from the manifest and call merge queries."""
         mock_graph = MagicMock()
@@ -221,7 +221,7 @@ class TestDeserializeGraph:
 
         assert report.edges_loaded == 1
 
-    @patch("app.services.deserializer.get_graph")
+    @patch("app.services.persistence.deserializer.get_graph")
     def test_loads_variables(self, mock_get_graph: MagicMock, tmp_path: Path) -> None:
         """Deserializer must load variables from grouped JSON files."""
         mock_graph = MagicMock()
@@ -250,7 +250,7 @@ class TestDeserializeGraph:
 
         assert report.variables_loaded == 1
 
-    @patch("app.services.deserializer.get_graph")
+    @patch("app.services.persistence.deserializer.get_graph")
     def test_loads_flows(self, mock_get_graph: MagicMock, tmp_path: Path) -> None:
         """Deserializer must load flow files and call MERGE_FLOW."""
         mock_graph = MagicMock()
@@ -273,7 +273,7 @@ class TestDeserializeGraph:
 
         assert report.flows_loaded == 1
 
-    @patch("app.services.deserializer.get_graph")
+    @patch("app.services.persistence.deserializer.get_graph")
     def test_handles_missing_directory_gracefully(self, mock_get_graph: MagicMock, tmp_path: Path) -> None:
         """Deserializer must handle a non-existent directory without raising."""
         mock_graph = MagicMock()
@@ -285,7 +285,7 @@ class TestDeserializeGraph:
         assert "Not a directory" in report.errors[0]
         assert report.nodes_loaded == 0
 
-    @patch("app.services.deserializer.get_graph")
+    @patch("app.services.persistence.deserializer.get_graph")
     def test_report_counts_are_correct(self, mock_get_graph: MagicMock, tmp_path: Path) -> None:
         """DeserializationReport must correctly count all loaded entities."""
         mock_graph = MagicMock()
@@ -305,7 +305,7 @@ class TestDeserializeGraph:
         assert report.nodes_loaded == 3
         assert report.errors == []
 
-    @patch("app.services.deserializer.get_graph")
+    @patch("app.services.persistence.deserializer.get_graph")
     def test_empty_directory_returns_zero_counts(self, mock_get_graph: MagicMock, tmp_path: Path) -> None:
         """An empty .bumblebee/ directory must deserialize with zero counts."""
         mock_graph = MagicMock()

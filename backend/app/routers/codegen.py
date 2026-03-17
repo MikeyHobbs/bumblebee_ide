@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.graph.client import get_graph
 from app.models.exceptions import NodeNotFoundError
-from app.services.code_generator import (
+from app.services.codegen.code_generator import (
     CodeGenerationError,
     generate_function_from_graph,
     generate_module,

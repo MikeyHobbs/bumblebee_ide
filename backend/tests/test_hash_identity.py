@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.services.hash_identity import (
+from app.services.analysis.hash_identity import (
     compute_ast_hash,
     detect_signature_change,
     extract_params_detailed,

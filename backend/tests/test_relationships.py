@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from app.services.ast_parser import parse_file
-from app.services.import_pipeline import _find_package_root
-from app.services.relationship_extractor import extract_relationships
+from app.services.parsing.ast_parser import parse_file
+from app.services.persistence.import_pipeline import _find_package_root
+from app.services.parsing.relationship_extractor import extract_relationships
 
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "sample_repo")

@@ -1,4 +1,8 @@
-"""Cypher query templates for graph operations."""
+"""LEGACY Cypher query templates (pre-800-series).
+
+Used by the old indexing pipeline (indexer.py, batch_upsert.py).
+New code should use logic_queries.py instead.
+"""
 
 from __future__ import annotations
 

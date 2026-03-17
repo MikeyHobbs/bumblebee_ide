@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from app.services.ast_parser import ParsedNode, compute_checksum, parse_file
+from app.services.parsing.ast_parser import ParsedNode, compute_checksum, parse_file
 
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "sample_repo")

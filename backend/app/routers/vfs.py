@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 
-from app.services import vfs_engine
+from app.services.persistence import vfs_engine
 
 router = APIRouter(prefix="/api/v1/vfs", tags=["vfs"])
 

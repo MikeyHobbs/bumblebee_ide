@@ -144,27 +144,47 @@ cd backend && uv run pytest tests/test_roundtrip.py -v
 
 ## API Endpoints
 
+### 800-Series (Code-as-Data)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v1/nodes` | Create a LogicNode |
+| `GET` | `/api/v1/nodes` | Search/list LogicNodes (`?query=`, `?kind=`, `?limit=`) |
+| `GET` | `/api/v1/nodes/{id}` | Get a LogicNode by UUID |
+| `PATCH` | `/api/v1/nodes/{id}` | Update a LogicNode |
+| `DELETE` | `/api/v1/nodes/{id}` | Deprecate a LogicNode |
+| `GET` | `/api/v1/nodes/{id}/edges` | Get edges for a node (`?direction=`, `?types=`) |
+| `GET` | `/api/v1/nodes/{id}/variables` | Get variables for a node |
+| `POST` | `/api/v1/edges` | Add an edge |
+| `DELETE` | `/api/v1/edges` | Remove an edge |
+| `GET` | `/api/v1/edges/all` | List all edges |
+| `GET` | `/api/v1/variables/{id}/timeline` | Mutation timeline |
+| `GET` | `/api/v1/variables/search` | Search variables |
+| `GET` | `/api/v1/variables/trace` | Trace a variable |
+| `POST` | `/api/v1/import/directory` | Import a directory of Python files |
+| `POST` | `/api/v1/import/file` | Import a single file |
+| `POST` | `/api/v1/flows` | Create a flow |
+| `GET` | `/api/v1/flows` | List all flows |
+| `GET` | `/api/v1/flows/{id}` | Get a flow |
+| `GET` | `/api/v1/flows/gaps` | Gap analysis report |
+| `GET` | `/api/v1/vfs/{module}` | Get VFS-projected source |
+| `POST` | `/api/v1/vfs/project` | Trigger full VFS projection |
+| `POST` | `/api/v1/vfs/sync` | Sync VFS changes to graph |
+| `GET` | `/api/v1/graph-overview` | Overview nodes + edges |
+
+### Legacy (pre-800)
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/v1/index` | Index a repository |
-| `POST` | `/api/v1/index/file` | Re-index a single file |
-| `GET` | `/api/v1/graph/nodes` | List nodes (paginated, filterable by label) |
-| `GET` | `/api/v1/graph/node/{id}` | Get a single node by name |
+| `GET` | `/api/v1/graph/nodes` | List nodes (paginated) |
 | `POST` | `/api/v1/query` | Execute raw Cypher |
 | `GET` | `/api/v1/logic-pack/{id}` | Get a Logic Pack subgraph |
-| `GET` | `/api/v1/variables/{id}/timeline` | Mutation timeline for a variable |
-| `GET` | `/api/v1/variables/search` | Search variables by name |
 | `GET` | `/api/v1/file` | Serve file content for Monaco |
-| `POST` | `/api/v1/codegen/{module_id}` | Generate Python source from graph |
-| `POST` | `/api/v1/codegen/function/{id}` | Generate a single function |
-| `PATCH` | `/api/v1/graph/statement/{id}` | Update a statement |
-| `POST` | `/api/v1/graph/statement` | Insert a statement |
-| `DELETE` | `/api/v1/graph/statement/{id}` | Delete a statement |
-| `GET` | `/api/v1/graph/function/{id}/flow` | Function flow subgraph |
+| `POST` | `/api/v1/codegen/{module}` | Generate Python source from graph |
 | `POST` | `/api/v1/edit/preview` | Ghost preview of an edit |
 | `POST` | `/api/v1/edit/apply` | Apply a previewed edit |
 | `POST` | `/api/v1/chat` | AI chat (SSE streaming) |
-| `GET` | `/api/v1/models` | List available LLM models |
 | `WS` | `/ws/graph` | Real-time graph events |
 
 ## Environment Variables
@@ -182,42 +202,32 @@ Copy `.env.example` to `.env` and adjust as needed:
 | `ORCHESTRATOR_MODEL` | `qwen2.5-coder:7b` | Model for AI chat |
 | `CYPHER_MODEL` | `qwen2.5-coder:7b` | Model for NL-to-Cypher |
 
-## Progress
+## Current Status & Next Steps
 
-### Phase 1: Backend Core
-- [x] TICKET-101: System Scaffolding
-- [x] TICKET-102: AST Parser — Structural Nodes
-- [x] TICKET-103: AST Parser — Relationship Edges
-- [x] TICKET-104: Statement & Control Flow Nodes
-- [x] TICKET-201: Variable & Assignment Nodes
-- [x] TICKET-202: Mutation & Read Detection
-- [x] TICKET-203: Cross-Function PASSES_TO
-- [x] TICKET-205: FEEDS Edges
-- [x] TICKET-204: Mutation Timeline Query + Endpoint
+### 800-Series Code-as-Data Refactor
 
-### Phase 2: Code Generation
-- [x] TICKET-206: Code Generator — Graph to Python
-- [x] TICKET-207: Round-Trip Integrity Tests
+The project has completed a major architectural shift: code now lives in the graph as atomic **LogicNodes**, with files treated as projections. All phases through frontend integration are functional.
 
-### Phase 3: Frontend + Graph Viz
-- [x] TICKET-301: Global Force-Directed Canvas
-- [x] TICKET-302: Logic Pack Visualizer + Function Flow View
-- [x] TICKET-303: Execution Flow Explorer
-- [x] TICKET-401: Monaco Context Manager
-- [x] TICKET-402: Bidirectional Highlighting & Mutation Gutter
-- [x] TICKET-403: Graph-Based Code Editing
+**Completed:**
+- **Phase 0:** Hash-identity system (UUID7 + SHA-256 AST hashing), FalkorDB schema, Pydantic models
+- **Phase 1:** LogicNode/Edge/Variable CRUD services + REST endpoints
+- **Phase 2:** Graph-to-Git serialization (`.bumblebee/` directory), Git-to-Graph deserialization, semantic diff engine, `.bumblebee/` file watcher
+- **Phase 3:** Python-to-LogicNode import pipeline (file + directory + incremental)
+- **Phase 4:** VFS projection engine (`vfs_engine.py`) serializes graph to `.bumblebee/vfs/`. Bidirectional sync watcher (`bumblebee_watcher.py`) monitors for changes. VFS files are git-tracked.
+- **Phase 5:** Flow service (CRUD + hierarchy + promote-to-node), gap analysis engine
+- **Phase 6:** TypeScript types, React Flow LogicNode/Variable/Flow components, Zustand store adaptations, semantic diff visualization
+- **Phase 7:** Agent tool system (`agent_tools_v2.py`) with 17 OpenAI-compatible function-calling tools, tool executor, semantic intent generation
 
-### Phase 4: AI Layer
-- [x] TICKET-501: Atomic Retrieval Query Templates
-- [x] TICKET-502: Natural Language to Cypher Agent
-
-### Phase 5: Live Sync
-- [x] TICKET-601: File System Watcher
-- [x] TICKET-602: Agent Ghost Preview
+**In Progress / Next:**
+- VFS conflict resolution polish
+- Cypher-based graph view filtering (TICKET-703)
+- Agent integration with VFS editing workflow
+- Real tool implementations for agent mutations
 
 ## Documentation
 
 - [Architecture Decisions](docs/decisions.md)
+- [Graph Schema Specification](docs/schema.md)
 - [Ticket Backlog](docs/tickets.md)
 - [Coding Standards](docs/coding_standards.md)
 - [Styling Guide](docs/styling.md)

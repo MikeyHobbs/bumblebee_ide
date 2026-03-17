@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.services.ast_parser import ParsedNode
-from app.services.variable_extractor import VariableNode, VariableEdge
-from app.services.relationship_extractor import RelationshipEdge
-from app.services.dataflow_extractor import DataFlowEdge
+from app.services.parsing.ast_parser import ParsedNode
+from app.services.parsing.variable_extractor import VariableNode, VariableEdge
+from app.services.parsing.relationship_extractor import RelationshipEdge
+from app.services.parsing.dataflow_extractor import DataFlowEdge
 
 
 @dataclass

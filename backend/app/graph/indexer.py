@@ -12,11 +12,11 @@ from app.graph import queries
 from app.graph.batch_upsert import BatchUpserter
 from app.graph.client import get_graph
 from app.models.exceptions import IndexingError
-from app.services.ast_parser import ParsedNode, ParseResult, _get_parser, compute_checksum, parse_file
-from app.services.dataflow_extractor import DataFlowEdge, extract_dataflow
-from app.services.relationship_extractor import RelationshipEdge, extract_relationships
-from app.services.statement_extractor import StatementEdge, StatementNode, extract_statements
-from app.services.variable_extractor import VariableEdge, VariableNode, VariableResult, extract_variables
+from app.services.parsing.ast_parser import ParsedNode, ParseResult, _get_parser, compute_checksum, parse_file
+from app.services.parsing.dataflow_extractor import DataFlowEdge, extract_dataflow
+from app.services.parsing.relationship_extractor import RelationshipEdge, extract_relationships
+from app.services.parsing.statement_extractor import StatementEdge, StatementNode, extract_statements
+from app.services.parsing.variable_extractor import VariableEdge, VariableNode, VariableResult, extract_variables
 
 logger = logging.getLogger(__name__)
 
