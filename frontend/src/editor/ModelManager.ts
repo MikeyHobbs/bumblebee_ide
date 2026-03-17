@@ -47,7 +47,7 @@ export function getOrCreateModel(
     return existing;
   }
 
-  const uri = monaco.Uri.parse(`file://${path}`);
+  const uri = monaco.Uri.from({ scheme: "file", path: `/${path}` });
   const existingByUri = monaco.editor.getModel(uri);
   if (existingByUri) {
     models.set(path, existingByUri);
