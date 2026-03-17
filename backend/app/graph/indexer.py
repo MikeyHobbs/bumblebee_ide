@@ -560,6 +560,14 @@ async def index_repository_async(
         raise IndexingError(f"Repository path does not exist: {repo_path}")
 
     graph = get_graph()
+
+    # Clear existing graph data before indexing a new repo
+    try:
+        graph.query("MATCH (n) DETACH DELETE n")
+        logger.info("Cleared existing graph data before re-index")
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("Failed to clear graph: %s", exc)
+
     stats: dict[str, int] = {"files_indexed": 0, "files_skipped": 0, "nodes_created": 0, "edges_created": 0}
     files = _collect_python_files(repo_path)
     total = len(files)

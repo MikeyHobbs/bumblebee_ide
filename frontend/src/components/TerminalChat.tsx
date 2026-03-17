@@ -390,7 +390,28 @@ function TerminalChat() {
   /** Fetch children of the current graph position. */
   async function fetchCurrentChildren(): Promise<SubgraphResponse | null> {
     if (viewMode === "knowledge-graph") {
-      // In knowledge graph mode, fetch all LogicNodes as a flat list
+      if (activeNodeId) {
+        // Focused on a specific node — fetch its connected nodes
+        const edges = await fetchJson<Array<{ type: string; source: string; target: string }>>(
+          `/api/v1/nodes/${activeNodeId}/edges?direction=outgoing`,
+        );
+        if (!edges) return null;
+        const nodeIds = edges.map((e) => e.target);
+        const nodes = await Promise.all(
+          nodeIds.slice(0, 20).map((id) =>
+            fetchJson<{ id: string; name: string; kind: string; module_path: string }>(`/api/v1/nodes/${id}`),
+          ),
+        );
+        return {
+          nodes: nodes.filter(Boolean).map((n) => ({
+            id: n!.id,
+            label: "LogicNode" as const,
+            properties: { name: n!.name, kind: n!.kind, module_path: n!.module_path },
+          })),
+          edges: [],
+        };
+      }
+      // Overview mode — fetch all LogicNodes as a flat list
       const nodes = await fetchJson<Array<{ id: string; name: string; kind: string; module_path: string }>>("/api/v1/nodes?limit=200");
       if (!nodes) return null;
       return {
@@ -398,27 +419,6 @@ function TerminalChat() {
           id: n.id,
           label: "LogicNode" as const,
           properties: { name: n.name, kind: n.kind, module_path: n.module_path },
-        })),
-        edges: [],
-      };
-    }
-    if (viewMode === "node-detail" && activeNodeId) {
-      // Fetch edges to find connected nodes
-      const edges = await fetchJson<Array<{ type: string; source: string; target: string }>>(
-        `/api/v1/nodes/${activeNodeId}/edges?direction=outgoing`,
-      );
-      if (!edges) return null;
-      const nodeIds = edges.map((e) => e.target);
-      const nodes = await Promise.all(
-        nodeIds.slice(0, 20).map((id) =>
-          fetchJson<{ id: string; name: string; kind: string; module_path: string }>(`/api/v1/nodes/${id}`),
-        ),
-      );
-      return {
-        nodes: nodes.filter(Boolean).map((n) => ({
-          id: n!.id,
-          label: "LogicNode" as const,
-          properties: { name: n!.name, kind: n!.kind, module_path: n!.module_path },
         })),
         edges: [],
       };

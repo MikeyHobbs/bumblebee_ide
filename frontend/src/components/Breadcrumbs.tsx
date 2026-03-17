@@ -1,14 +1,12 @@
 import { ChevronRight } from "lucide-react";
-import { useNavigationStore } from "@/store/navigationStore";
 import { useGraphStore } from "@/store/graphStore";
 
 function Breadcrumbs() {
-  const stack = useNavigationStore((s) => s.navigationStack);
-  const popNavigation = useNavigationStore((s) => s.popNavigation);
-  const clearNavigation = useNavigationStore((s) => s.clearNavigation);
-  const selectNode = useGraphStore((s) => s.selectNode);
+  const breadcrumb = useGraphStore((s) => s.breadcrumb);
+  const navigateBack = useGraphStore((s) => s.navigateBack);
+  const goHome = useGraphStore((s) => s.goHome);
 
-  if (stack.length === 0) {
+  if (breadcrumb.length <= 1) {
     return (
       <div
         className="h-7 flex items-center px-2 text-xs border-b"
@@ -32,38 +30,30 @@ function Breadcrumbs() {
         color: "var(--text-secondary)",
       }}
     >
-      <button
-        onClick={() => {
-          clearNavigation();
-          selectNode(null);
-        }}
-        className="hover:underline flex-shrink-0"
-        style={{ color: "var(--text-secondary)", cursor: "pointer", background: "none", border: "none" }}
-      >
-        Graph
-      </button>
-      {stack.map((nodeId, idx) => (
-        <span key={`${nodeId}-${idx}`} className="flex items-center gap-1 flex-shrink-0">
-          <ChevronRight size={10} style={{ color: "var(--text-muted)" }} />
-          <button
-            onClick={() => {
-              // Pop back to this item
-              const popCount = stack.length - idx - 1;
-              for (let i = 0; i < popCount; i++) {
-                popNavigation();
-              }
-              selectNode(nodeId);
-            }}
-            className="hover:underline"
-            style={{
-              color: idx === stack.length - 1 ? "var(--text-primary)" : "var(--text-secondary)",
-              cursor: "pointer",
-              background: "none",
-              border: "none",
-            }}
-          >
-            {nodeId}
-          </button>
+      {breadcrumb.map((entry, i) => (
+        <span key={i} className="flex items-center gap-1 flex-shrink-0">
+          {i > 0 && (
+            <ChevronRight size={10} style={{ color: "var(--text-muted)" }} />
+          )}
+          {i < breadcrumb.length - 1 ? (
+            <button
+              onClick={() => {
+                if (i === 0) {
+                  goHome();
+                } else {
+                  navigateBack(i);
+                }
+              }}
+              className="hover:underline"
+              style={{ color: "var(--text-secondary)", cursor: "pointer", background: "none", border: "none" }}
+            >
+              {entry.label}
+            </button>
+          ) : (
+            <span style={{ color: "var(--text-primary)" }}>
+              {entry.label}
+            </span>
+          )}
         </span>
       ))}
     </div>

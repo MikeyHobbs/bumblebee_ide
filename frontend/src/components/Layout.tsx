@@ -1,5 +1,4 @@
 import { useCallback, useRef, useState } from "react";
-import { ReactFlowProvider } from "@xyflow/react";
 import GraphCanvas from "./GraphCanvas";
 import CodeEditor from "./CodeEditor";
 import TerminalChat from "./TerminalChat";
@@ -14,11 +13,13 @@ function HResizeHandle({
 }) {
   const dragging = useRef(false);
   const lastX = useRef(0);
+  const [active, setActive] = useState(false);
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
       dragging.current = true;
+      setActive(true);
       lastX.current = e.clientX;
 
       const handleMouseMove = (ev: MouseEvent) => {
@@ -30,6 +31,7 @@ function HResizeHandle({
 
       const handleMouseUp = () => {
         dragging.current = false;
+        setActive(false);
         document.removeEventListener("mousemove", handleMouseMove);
         document.removeEventListener("mouseup", handleMouseUp);
       };
@@ -42,10 +44,29 @@ function HResizeHandle({
 
   return (
     <div
-      className="w-1 cursor-col-resize flex-shrink-0 hover:bg-[var(--border-focus)]"
-      style={{ background: "var(--border)" }}
+      className="group w-3 cursor-col-resize flex-shrink-0 flex items-center justify-center"
+      style={{ background: "transparent" }}
       onMouseDown={handleMouseDown}
-    />
+    >
+      <div
+        className="w-[2px] h-full transition-colors"
+        style={{
+          background: active ? "var(--border-focus)" : "var(--border)",
+        }}
+      />
+      <div
+        className="absolute flex flex-col gap-[3px] opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{ pointerEvents: "none" }}
+      >
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="block w-[3px] h-[3px] rounded-full"
+            style={{ background: active ? "var(--border-focus)" : "var(--text-muted)" }}
+          />
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -56,11 +77,13 @@ function VResizeHandle({
 }) {
   const dragging = useRef(false);
   const lastY = useRef(0);
+  const [active, setActive] = useState(false);
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
       dragging.current = true;
+      setActive(true);
       lastY.current = e.clientY;
 
       const handleMouseMove = (ev: MouseEvent) => {
@@ -72,6 +95,7 @@ function VResizeHandle({
 
       const handleMouseUp = () => {
         dragging.current = false;
+        setActive(false);
         document.removeEventListener("mousemove", handleMouseMove);
         document.removeEventListener("mouseup", handleMouseUp);
       };
@@ -84,10 +108,29 @@ function VResizeHandle({
 
   return (
     <div
-      className="h-1 cursor-row-resize flex-shrink-0 hover:bg-[var(--border-focus)]"
-      style={{ background: "var(--border)" }}
+      className="group h-3 cursor-row-resize flex-shrink-0 flex items-center justify-center"
+      style={{ background: "transparent" }}
       onMouseDown={handleMouseDown}
-    />
+    >
+      <div
+        className="h-[2px] w-full transition-colors"
+        style={{
+          background: active ? "var(--border-focus)" : "var(--border)",
+        }}
+      />
+      <div
+        className="absolute flex flex-row gap-[3px] opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{ pointerEvents: "none" }}
+      >
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="block w-[3px] h-[3px] rounded-full"
+            style={{ background: active ? "var(--border-focus)" : "var(--text-muted)" }}
+          />
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -149,7 +192,7 @@ function Layout() {
   return (
     <div
       ref={measureContainer}
-      className="flex flex-col h-screen w-screen overflow-hidden"
+      className="flex flex-col h-full w-full overflow-hidden"
       style={{ background: "var(--bg-primary)" }}
     >
       {/* Top row: Graph + Editor side-by-side */}
@@ -164,9 +207,7 @@ function Layout() {
           >
             <Breadcrumbs />
             <div className="flex-1 overflow-hidden">
-              <ReactFlowProvider>
-                <GraphCanvas />
-              </ReactFlowProvider>
+              <GraphCanvas />
             </div>
           </div>
         )}

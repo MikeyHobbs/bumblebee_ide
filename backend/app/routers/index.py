@@ -11,9 +11,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config import settings
-from app.graph.indexer import index_file, index_repository_async
+from app.graph.indexer import index_file
 from app.models.exceptions import IndexingError
 from app.routers.websocket import broadcast
+from app.services.import_pipeline import import_directory
 
 logger = logging.getLogger(__name__)
 
@@ -78,26 +79,52 @@ async def _run_index_job(job_id: str, repo_path: str) -> None:
         job_id: Unique job identifier.
         repo_path: Path to the repository to index.
     """
+    progress_queue: asyncio.Queue[tuple[str, int, int]] = asyncio.Queue()
 
-    async def _progress(file: str, done: int, total: int) -> None:
-        _jobs[job_id] = {
-            "status": "indexing",
-            "files_done": done,
-            "files_total": total,
-            "current_file": file,
-        }
-        await broadcast("index:progress", {"file": file, "done": done, "total": total})
-        await broadcast("graph:updated", {"affected_modules": [file]})
+    def _progress_cb(file_path: str, total: int, done: int) -> None:
+        progress_queue.put_nowait((file_path, total, done))
+
+    async def _drain_progress() -> None:
+        while True:
+            try:
+                file_path, total, done = progress_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            _jobs[job_id] = {
+                "status": "indexing",
+                "files_done": done,
+                "files_total": total,
+                "current_file": file_path,
+            }
+            await broadcast("index:progress", {"file": file_path, "done": done, "total": total})
 
     try:
-        stats = await index_repository_async(repo_path, progress_callback=_progress)
+        import_task = asyncio.get_event_loop().run_in_executor(
+            None, lambda: import_directory(repo_path, progress_callback=_progress_cb)
+        )
+        while not import_task.done():
+            await _drain_progress()
+            await asyncio.sleep(0.1)
+        report = await import_task
+        await _drain_progress()
         _jobs[job_id] = {
             "status": "complete",
-            "files_done": stats["files_indexed"] + stats["files_skipped"],
-            "files_total": stats["files_indexed"] + stats["files_skipped"],
+            "files_done": report.files_processed,
+            "files_total": report.files_processed,
             "current_file": "",
         }
+        await broadcast("index:progress", {"file": "", "done": report.files_processed, "total": report.files_processed})
         await broadcast("graph:updated", {"affected_modules": []})
+
+        # Start file watcher for the indexed repo
+        try:
+            from app.services.file_watcher import start_watcher  # pylint: disable=import-outside-toplevel
+
+            loop = asyncio.get_event_loop()
+            start_watcher(repo_path, loop=loop)
+            logger.info("File watcher started after index for: %s", repo_path)
+        except Exception:  # pylint: disable=broad-except  # Watcher is optional
+            logger.debug("Could not start file watcher after index")
     except Exception:
         logger.exception("Indexing job %s failed", job_id)
         _jobs[job_id] = {
@@ -106,6 +133,7 @@ async def _run_index_job(job_id: str, repo_path: str) -> None:
             "files_total": 0,
             "current_file": "",
         }
+        await broadcast("index:progress", {"file": "", "done": 1, "total": 1})
 
 
 @router.post("/index", status_code=202)

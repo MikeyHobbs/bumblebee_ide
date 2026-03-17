@@ -14,6 +14,72 @@ from app.services.ast_parser import _get_parser
 logger = logging.getLogger(__name__)
 
 
+def append_function_to_file(source_text: str, module_path: str, repo_root: str) -> None:
+    """Append a new function's source text to the end of a module file.
+
+    Creates the file (and intermediate directories) if it does not exist.
+    Two blank lines are inserted before the appended function to follow PEP 8.
+
+    Args:
+        source_text: The complete source text of the function to append.
+        module_path: Relative module file path (e.g. ``pkg/utils.py``).
+        repo_root: Absolute path to the repository root.
+    """
+    abs_path = os.path.join(os.path.abspath(repo_root), module_path) if repo_root else os.path.abspath(module_path)
+
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+
+    if os.path.isfile(abs_path):
+        with open(abs_path, encoding="utf-8") as f:
+            existing = f.read()
+        separator = "\n\n\n" if existing and not existing.endswith("\n\n") else "\n\n" if existing else ""
+    else:
+        existing = ""
+        separator = ""
+
+    with open(abs_path, "w", encoding="utf-8") as f:
+        f.write(existing + separator + source_text + "\n")
+
+    logger.info("Appended function to %s", abs_path)
+
+
+def replace_function_in_file(new_source: str, file_path: str, start_line: int, end_line: int) -> None:
+    """Replace lines ``start_line`` through ``end_line`` (1-based, inclusive) in a file.
+
+    Args:
+        new_source: Replacement source text.
+        file_path: Absolute path to the target file.
+        start_line: First line to replace (1-based).
+        end_line: Last line to replace (1-based, inclusive).
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If start_line or end_line are out of range.
+    """
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"Cannot replace function: file not found: {file_path}")
+
+    with open(file_path, encoding="utf-8") as f:
+        lines = f.readlines()
+
+    if start_line < 1 or end_line > len(lines) or start_line > end_line:
+        raise ValueError(
+            f"Invalid line range {start_line}..{end_line} for file with {len(lines)} lines"
+        )
+
+    new_lines = [line + "\n" for line in new_source.split("\n") if line != ""] if new_source else []
+    # Ensure the last replacement line ends with a newline
+    if new_lines and not new_lines[-1].endswith("\n"):
+        new_lines[-1] += "\n"
+
+    lines[start_line - 1:end_line] = new_lines
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    logger.info("Replaced lines %d-%d in %s", start_line, end_line, file_path)
+
+
 class WriteBackError(BumblebeeError):
     """Raised when a write-back operation fails."""
 

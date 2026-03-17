@@ -31,10 +31,10 @@ function App() {
   }
 
   return (
-    <div className="relative h-screen w-screen">
+    <div className="flex flex-col h-screen w-screen">
       {indexing && (
         <div
-          className="absolute top-0 left-0 right-0 z-50 flex items-center gap-2 px-3 py-1 text-xs font-mono"
+          className="flex items-center gap-2 px-3 py-1 text-xs font-mono flex-shrink-0"
           style={{
             background: "var(--bg-tertiary)",
             color: "var(--text-secondary)",
@@ -57,7 +57,9 @@ function App() {
           </span>
         </div>
       )}
-      <Layout />
+      <div className="flex-1 min-h-0">
+        <Layout />
+      </div>
     </div>
   );
 }

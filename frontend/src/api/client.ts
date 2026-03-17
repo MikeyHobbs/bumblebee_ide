@@ -240,6 +240,15 @@ export function useLogicNodes(query?: string, kind?: string, limit = 100) {
   });
 }
 
+/** Quick check if graph already has indexed data. */
+export function useGraphHasData() {
+  return useQuery({
+    queryKey: ["logic-nodes-probe"],
+    queryFn: () => apiFetch<LogicNodeResponse[]>("/api/v1/nodes?limit=1"),
+    staleTime: 30_000,
+  });
+}
+
 export function useLogicNode(nodeId: string | null) {
   return useQuery({
     queryKey: ["logic-node", nodeId],
@@ -248,13 +257,37 @@ export function useLogicNode(nodeId: string | null) {
   });
 }
 
-export function useNodeEdges(nodeId: string | null, direction = "outgoing") {
+export function useNodeEdges(
+  nodeId: string | null,
+  direction = "outgoing",
+  types?: string[],
+) {
   return useQuery({
-    queryKey: ["node-edges", nodeId, direction],
-    queryFn: () =>
-      apiFetch<Array<{ type: string; source: string; target: string; properties: Record<string, unknown> }>>(
-        `/api/v1/nodes/${nodeId!}/edges?direction=${direction}`,
-      ),
+    queryKey: ["node-edges", nodeId, direction, types],
+    queryFn: () => {
+      const params = new URLSearchParams({ direction });
+      if (types?.length) params.set("types", types.join(","));
+      return apiFetch<Array<{ type: string; source: string; target: string; properties: Record<string, unknown> }>>(
+        `/api/v1/nodes/${nodeId!}/edges?${params.toString()}`,
+      );
+    },
+    enabled: nodeId !== null,
+  });
+}
+
+export interface NodeVariable {
+  id: string;
+  name: string;
+  type_hint: string | null;
+  is_parameter: boolean;
+  is_attribute: boolean;
+  edge_type: string;
+}
+
+export function useNodeVariables(nodeId: string | null) {
+  return useQuery({
+    queryKey: ["node-variables", nodeId],
+    queryFn: () => apiFetch<NodeVariable[]>(`/api/v1/nodes/${nodeId!}/variables`),
     enabled: nodeId !== null,
   });
 }
@@ -264,7 +297,7 @@ export function useAllEdges() {
     queryKey: ["all-edges"],
     queryFn: () =>
       apiFetch<Array<{ type: string; source: string; target: string; properties: Record<string, unknown> }>>(
-        "/api/v1/edges/all",
+        "/api/v1/edges/all?limit=5000",
       ),
   });
 }

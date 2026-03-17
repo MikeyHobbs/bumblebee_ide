@@ -1,0 +1,676 @@
+import { useEffect, useRef, useMemo, useCallback } from "react";
+import Graph from "graphology";
+import forceAtlas2 from "graphology-layout-forceatlas2";
+
+import Sigma from "sigma";
+import { useGraphStore } from "@/store/graphStore";
+import { useEditorStore } from "@/store/editorStore";
+import { useLogicNodes, useAllEdges, useNodeVariables } from "@/api/client";
+import { getSigmaZoomTier, labelThresholdForTier } from "@/graph/layout/semanticZoom";
+
+const HIGH_LEVEL_KINDS = new Set(["function", "method", "class", "flow_function"]);
+
+const VARIABLE_COLOR = "#ffd54f";
+const PARAM_COLOR = "#81d4fa";
+const ATTR_COLOR = "#ce93d8";
+
+/** Muted pastel palette for file/class groups. */
+function generatePaletteColor(index: number): string {
+  const hue = (index * 137.508) % 360;
+  const sat = (35 + (index % 3) * 8) / 100;
+  const lit = (60 + (index % 4) * 4) / 100;
+  const a = sat * Math.min(lit, 1 - lit);
+  const f = (n: number) => {
+    const k = (n + hue / 30) % 12;
+    const color = lit - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+function sizeForKind(kind: string): number {
+  switch (kind) {
+    case "class": return 10;
+    case "module": return 12;
+    case "function":
+    case "method":
+    case "flow_function": return 6;
+    default: return 4;
+  }
+}
+
+function localName(qualifiedName: string): string {
+  const parts = qualifiedName.split(".");
+  return parts[parts.length - 1] ?? qualifiedName;
+}
+
+function varColor(v: { is_parameter: boolean; is_attribute: boolean }): string {
+  if (v.is_parameter) return PARAM_COLOR;
+  if (v.is_attribute) return ATTR_COLOR;
+  return VARIABLE_COLOR;
+}
+
+function AtlasOverview() {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const sigmaRef = useRef<Sigma | null>(null);
+  const graphRef = useRef<Graph | null>(null);
+  const draggedNode = useRef<string | null>(null);
+  const isDragging = useRef(false);
+  const wasDragged = useRef(false);
+  const hoveredNode = useRef<string | null>(null);
+  const traceRef = useRef<Set<string>>(new Set());
+
+  // Store state
+  const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
+  const expandedNodeId = useGraphStore((s) => s.expandedNodeId);
+  const tracedVariableId = useGraphStore((s) => s.tracedVariableId);
+  const navigateToNode = useGraphStore((s) => s.navigateToNode);
+  const goHome = useGraphStore((s) => s.goHome);
+  const expandNode = useGraphStore((s) => s.expandNode);
+  const collapseExpanded = useGraphStore((s) => s.collapseExpanded);
+  const traceVariable = useGraphStore((s) => s.traceVariable);
+  const clearTrace = useGraphStore((s) => s.clearTrace);
+  const openNodeView = useEditorStore((s) => s.openNodeView);
+
+  // Stable refs for callbacks
+  const callbacksRef = useRef({ navigateToNode, goHome, expandNode, collapseExpanded, openNodeView, traceVariable, clearTrace });
+  callbacksRef.current = { navigateToNode, goHome, expandNode, collapseExpanded, openNodeView, traceVariable, clearTrace };
+
+  // Ref to track focused/expanded in event handlers without re-creating Sigma
+  const focusRef = useRef({ focusedNodeId, expandedNodeId });
+  focusRef.current = { focusedNodeId, expandedNodeId };
+
+  // Data fetching
+  const { data: allNodes } = useLogicNodes(undefined, undefined, 10000);
+  const { data: allEdgesData } = useAllEdges();
+
+  // Fetch actual variable node data for the expanded node
+  const { data: expandedVariables } = useNodeVariables(expandedNodeId);
+
+  // Variable trace: find real ID from graphology node
+  const tracedRealId = useMemo(() => {
+    if (!tracedVariableId) return null;
+    const graph = graphRef.current;
+    if (!graph || !graph.hasNode(tracedVariableId)) return null;
+    const attrs = graph.getNodeAttributes(tracedVariableId);
+    return (typeof attrs.realNodeId === "string" ? attrs.realNodeId : null);
+  }, [tracedVariableId]);
+
+  // For trace, re-use node variables on the traced variable's origin
+  const { data: traceVariables } = useNodeVariables(tracedRealId);
+
+  // Filter to high-level nodes only
+  const filteredNodes = useMemo(() => {
+    if (!allNodes) return [];
+    return allNodes.filter((n) => HIGH_LEVEL_KINDS.has(n.kind));
+  }, [allNodes]);
+
+  // Filter edges to only those connecting filtered nodes
+  const filteredEdges = useMemo(() => {
+    if (!allEdgesData || filteredNodes.length === 0) return [];
+    const ids = new Set(filteredNodes.map((n) => n.id));
+    return allEdgesData.filter((e) => ids.has(e.source) && ids.has(e.target));
+  }, [allEdgesData, filteredNodes]);
+
+  const nodeCount = filteredNodes.length;
+  const edgeCount = filteredEdges.length;
+  const allEdgesLen = allEdgesData?.length ?? 0;
+
+  // Build graphology graph
+  const graphData = useMemo(() => {
+    const g = new Graph({ multi: true, type: "directed" });
+
+    // Build class membership map from MEMBER_OF edges
+    const classMap = new Map<string, string>();
+    if (allEdgesData) {
+      for (const e of allEdgesData) {
+        if (e.type === "MEMBER_OF") {
+          classMap.set(e.source, e.target);
+        }
+      }
+    }
+
+    // Build group key per node and assign colors
+    const groupColorMap = new Map<string, string>();
+    let colorIndex = 0;
+
+    function getGroupColor(groupKey: string): string {
+      let color = groupColorMap.get(groupKey);
+      if (!color) {
+        color = generatePaletteColor(colorIndex++);
+        groupColorMap.set(groupKey, color);
+      }
+      return color;
+    }
+
+    // Compute degree map from filtered edges
+    const degreeMap = new Map<string, number>();
+    for (const e of filteredEdges) {
+      degreeMap.set(e.source, (degreeMap.get(e.source) ?? 0) + 1);
+      degreeMap.set(e.target, (degreeMap.get(e.target) ?? 0) + 1);
+    }
+
+    const nodeIdSet = new Set<string>();
+    for (const n of filteredNodes) {
+      if (nodeIdSet.has(n.id)) continue;
+      nodeIdSet.add(n.id);
+
+      const classId = classMap.get(n.id);
+      const groupKey = classId ? `class:${classId}` : `file:${n.module_path}`;
+      const color = getGroupColor(groupKey);
+
+      const degree = degreeMap.get(n.id) ?? 0;
+      const size = sizeForKind(n.kind) + Math.log2(1 + degree) * 1;
+
+      g.addNode(n.id, {
+        x: Math.random() * 10,
+        y: Math.random() * 10,
+        size,
+        color,
+        originalColor: color,
+        label: localName(n.name),
+        kind: n.kind,
+        modulePath: n.module_path,
+        sourceText: n.source_text,
+        name: n.name,
+        isVariable: false,
+      });
+    }
+
+    for (const e of filteredEdges) {
+      if (nodeIdSet.has(e.source) && nodeIdSet.has(e.target)) {
+        try {
+          g.addEdge(e.source, e.target, {
+            color: "rgba(255,255,255,0.06)",
+            size: 0.3,
+            type: "arrow",
+            edgeType: e.type,
+            weight: 1,
+          });
+        } catch {
+          // skip duplicate edges
+        }
+      }
+    }
+
+    // Add invisible same-file edges so co-located nodes cluster together.
+    // Without these, nodes in the same file that don't directly call each
+    // other have zero attraction and scatter randomly across the canvas.
+    const fileGroups = new Map<string, string[]>();
+    g.forEachNode((node, attrs) => {
+      const fp = attrs.modulePath as string;
+      if (!fp) return;
+      let list = fileGroups.get(fp);
+      if (!list) { list = []; fileGroups.set(fp, list); }
+      list.push(node);
+    });
+    for (const members of fileGroups.values()) {
+      if (members.length < 2) continue;
+      // Connect every pair in the file with a weak hidden edge
+      for (let i = 0; i < members.length; i++) {
+        for (let j = i + 1; j < members.length; j++) {
+          try {
+            g.addEdge(members[i], members[j], {
+              color: "rgba(0,0,0,0)",
+              size: 0,
+              hidden: true,
+              weight: 0.3,
+              edgeType: "SAME_FILE",
+            });
+          } catch {
+            // skip duplicate
+          }
+        }
+      }
+    }
+
+    // Run layout before returning so positions are set before Sigma renders
+    if (g.order > 0) {
+      forceAtlas2.assign(g, {
+        iterations: 500,
+        settings: {
+          barnesHutOptimize: true,
+          adjustSizes: false,
+          linLogMode: false,
+          strongGravityMode: false,
+          gravity: 2,
+          scalingRatio: 1,
+          edgeWeightInfluence: 1,
+          slowDown: 2,
+        },
+      });
+    }
+
+    return g;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeCount, edgeCount, allEdgesLen]);
+
+  // Handle variable expansion: show real variable nodes near the parent
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+
+    // Remove any existing variable nodes first
+    const toRemove: string[] = [];
+    graph.forEachNode((node, attrs) => {
+      if (attrs.isVariable) toRemove.push(node);
+    });
+    for (const nodeId of toRemove) {
+      graph.dropNode(nodeId);
+    }
+
+    // Add variable nodes from the fetched variable data
+    if (expandedNodeId && expandedVariables && graph.hasNode(expandedNodeId)) {
+      const parentAttrs = graph.getNodeAttributes(expandedNodeId);
+      const parentX = parentAttrs.x as number;
+      const parentY = parentAttrs.y as number;
+
+      // Compute graph extent from actual node positions
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      graph.forEachNode((_, attrs) => {
+        const nx = attrs.x as number;
+        const ny = attrs.y as number;
+        if (nx < minX) minX = nx;
+        if (nx > maxX) maxX = nx;
+        if (ny < minY) minY = ny;
+        if (ny > maxY) maxY = ny;
+      });
+      const graphSpan = Math.max(maxX - minX, maxY - minY) || 100;
+
+      // Orbit radius = ~3% of the total graph span — tight orbit
+      const radius = graphSpan * 0.03;
+
+      const angleStep = expandedVariables.length > 0 ? (2 * Math.PI) / expandedVariables.length : 0;
+
+      expandedVariables.forEach((v, i) => {
+        const angle = angleStep * i;
+        const varId = `var:${v.id}`;
+        if (graph.hasNode(varId)) return;
+
+        const shortName = localName(v.name);
+        const typeStr = v.type_hint ? `: ${v.type_hint}` : "";
+        const label = `${shortName}${typeStr}`;
+        const col = varColor(v);
+
+        graph.addNode(varId, {
+          x: parentX + radius * Math.cos(angle),
+          y: parentY + radius * Math.sin(angle),
+          size: 1.5,
+          color: col,
+          originalColor: col,
+          label,
+          kind: "variable",
+          isVariable: true,
+          realNodeId: v.id,
+          fixed: true,
+        });
+
+        try {
+          graph.addEdge(expandedNodeId, varId, {
+            color: col + "66",
+            size: 0.5,
+            type: "arrow",
+            edgeType: v.edge_type,
+            isVariable: true,
+          });
+        } catch {
+          // skip duplicate
+        }
+      });
+    }
+
+    sigmaRef.current?.refresh();
+  }, [expandedNodeId, expandedVariables]);
+
+  // Handle variable trace: highlight connected LogicNodes
+  useEffect(() => {
+    if (tracedVariableId && traceVariables) {
+      const traced = new Set<string>();
+      traced.add(tracedVariableId);
+      const graph = graphRef.current;
+      if (graph) {
+        // Find all LogicNodes that share an edge with this variable
+        for (const v of traceVariables) {
+          const varNodeId = `var:${v.id}`;
+          if (graph.hasNode(varNodeId)) traced.add(varNodeId);
+        }
+        // Also trace the origin node
+        graph.forEachNode((node, attrs) => {
+          if (!attrs.isVariable) {
+            // Check if any variable edge connects this node to the traced variable
+            for (const v of traceVariables) {
+              if (v.id === tracedVariableId || `var:${v.id}` === tracedVariableId) {
+                traced.add(node);
+              }
+            }
+          }
+        });
+      }
+      traceRef.current = traced;
+    } else {
+      traceRef.current = new Set();
+    }
+    sigmaRef.current?.refresh();
+  }, [tracedVariableId, traceVariables]);
+
+  // Camera animation on focus change
+  const animateToNode = useCallback((nodeId: string | null) => {
+    const sigma = sigmaRef.current;
+    if (!sigma) return;
+
+    if (!nodeId) {
+      sigma.getCamera().animate({ x: 0.5, y: 0.5, ratio: 1 }, { duration: 500 });
+      return;
+    }
+
+    const graph = graphRef.current;
+    if (!graph || !graph.hasNode(nodeId)) return;
+
+    const attrs = graph.getNodeAttributes(nodeId);
+    const nodeDisplayData = sigma.getNodeDisplayData(nodeId);
+    if (nodeDisplayData) {
+      const graphCoords = sigma.viewportToFramedGraph(
+        sigma.graphToViewport({ x: attrs.x as number, y: attrs.y as number })
+      );
+      sigma.getCamera().animate(
+        { x: graphCoords.x, y: graphCoords.y, ratio: 0.3 },
+        { duration: 600 }
+      );
+    }
+  }, []);
+
+  // React to focusedNodeId changes
+  useEffect(() => {
+    animateToNode(focusedNodeId);
+  }, [focusedNodeId, animateToNode]);
+
+  // Create and manage Sigma instance
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || graphData.order === 0) return;
+    graphRef.current = graphData;
+
+    if (sigmaRef.current) {
+      sigmaRef.current.kill();
+      sigmaRef.current = null;
+    }
+
+    const sigma = new Sigma(graphData, container, {
+      defaultEdgeColor: "rgba(255,255,255,0.06)",
+      defaultNodeColor: "#888",
+      labelColor: { color: "#c0c0c0" },
+      labelFont: "monospace",
+      labelSize: 11,
+      labelRenderedSizeThreshold: 6,
+      renderEdgeLabels: false,
+      minCameraRatio: 0.01,
+      maxCameraRatio: 10,
+      nodeReducer: (node, data) => {
+        const res = { ...data };
+        const { focusedNodeId: fid } = focusRef.current;
+        const hovered = hoveredNode.current;
+        const graph = graphRef.current;
+        const tracedIds = traceRef.current;
+
+        // Variable trace mode
+        if (tracedIds.size > 0) {
+          if (tracedIds.has(node)) {
+            res.highlighted = true;
+            res.zIndex = 2;
+          } else {
+            res.color = "rgba(60,60,60,0.12)";
+            res.label = "";
+            res.zIndex = 0;
+          }
+          return res;
+        }
+
+        // Focused mode: dim non-neighbors
+        if (fid && graph) {
+          const isFocused = node === fid;
+          const isNeighbor = graph.hasEdge(fid, node) || graph.hasEdge(node, fid);
+
+          if (isFocused) {
+            res.highlighted = true;
+            res.zIndex = 2;
+            res.size = (data.size as number) + 3;
+          } else if (isNeighbor || data.isVariable) {
+            res.zIndex = 1;
+          } else {
+            res.color = "rgba(60,60,60,0.12)";
+            res.label = "";
+            res.zIndex = 0;
+          }
+        }
+
+        // Hover highlighting
+        if (hovered && graph) {
+          if (node === hovered) {
+            res.highlighted = true;
+            res.zIndex = 2;
+          } else if (graph.hasEdge(hovered, node) || graph.hasEdge(node, hovered)) {
+            res.highlighted = true;
+            res.zIndex = 1;
+          } else if (!fid) {
+            res.color = "rgba(80,80,80,0.15)";
+            res.label = "";
+            res.zIndex = 0;
+          }
+        }
+
+        return res;
+      },
+      edgeReducer: (edge, data) => {
+        const res = { ...data };
+        const { focusedNodeId: fid } = focusRef.current;
+        const hovered = hoveredNode.current;
+        const graph = graphRef.current;
+        const tracedIds = traceRef.current;
+
+        // Variable trace mode
+        if (tracedIds.size > 0 && graph) {
+          const src = graph.source(edge);
+          const tgt = graph.target(edge);
+          if (tracedIds.has(src) && tracedIds.has(tgt)) {
+            res.color = VARIABLE_COLOR;
+            res.size = 1.5;
+          } else {
+            res.color = "rgba(60,60,60,0.03)";
+          }
+          return res;
+        }
+
+        if (fid && graph) {
+          const src = graph.source(edge);
+          const tgt = graph.target(edge);
+          if (src === fid || tgt === fid) {
+            res.color = "rgba(255,255,255,0.4)";
+            res.size = 1;
+          } else {
+            res.color = "rgba(60,60,60,0.03)";
+          }
+        }
+
+        if (hovered && graph) {
+          const src = graph.source(edge);
+          const tgt = graph.target(edge);
+          if (src === hovered || tgt === hovered) {
+            res.color = "rgba(255,255,255,0.35)";
+            res.size = 1;
+          } else if (!fid) {
+            res.color = "rgba(80,80,80,0.04)";
+          }
+        }
+
+        return res;
+      },
+    });
+
+    // Hover events
+    sigma.on("enterNode", ({ node }) => {
+      hoveredNode.current = node;
+      sigma.refresh();
+      container.style.cursor = "pointer";
+    });
+
+    sigma.on("leaveNode", () => {
+      hoveredNode.current = null;
+      sigma.refresh();
+      container.style.cursor = "default";
+    });
+
+    // Single click: focus on node (skip if we were dragging)
+    sigma.on("clickNode", ({ node }) => {
+      if (wasDragged.current) {
+        wasDragged.current = false;
+        return;
+      }
+      const graph = graphRef.current;
+      const attrs = graph?.getNodeAttributes(node);
+      if (!attrs) return;
+
+      if (attrs.isVariable) return;
+
+      const nodeName = typeof attrs.name === "string" ? attrs.name : node;
+      const kind = typeof attrs.kind === "string" ? attrs.kind : "";
+      const sourceText = typeof attrs.sourceText === "string" ? attrs.sourceText : "";
+      const modulePath = typeof attrs.modulePath === "string" ? attrs.modulePath : "";
+
+      if (sourceText) {
+        callbacksRef.current.openNodeView({
+          nodeId: node,
+          name: localName(nodeName),
+          kind,
+          sourceText,
+          modulePath,
+        });
+      }
+
+      callbacksRef.current.navigateToNode(node, localName(nodeName));
+    });
+
+    // Double click: expand or trace
+    sigma.on("doubleClickNode", ({ node, preventSigmaDefault }) => {
+      preventSigmaDefault();
+      const attrs = graphRef.current?.getNodeAttributes(node);
+
+      if (attrs?.isVariable) {
+        callbacksRef.current.traceVariable(node);
+        return;
+      }
+
+      callbacksRef.current.expandNode(node);
+    });
+
+    sigma.on("doubleClickStage", ({ preventSigmaDefault }) => {
+      preventSigmaDefault();
+    });
+
+    // Click stage: go home
+    sigma.on("clickStage", () => {
+      if (focusRef.current.focusedNodeId || traceRef.current.size > 0) {
+        callbacksRef.current.clearTrace();
+        callbacksRef.current.collapseExpanded();
+        callbacksRef.current.goHome();
+        sigma.getCamera().animate({ x: 0.5, y: 0.5, ratio: 1 }, { duration: 500 });
+      }
+    });
+
+    // Node drag-and-drop
+    sigma.on("downNode", ({ node, event }) => {
+      isDragging.current = true;
+      draggedNode.current = node;
+      sigma.getCamera().disable();
+      event.original.preventDefault();
+      event.original.stopPropagation();
+    });
+
+    sigma.getMouseCaptor().on("mousemovebody", (event) => {
+      if (!isDragging.current || !draggedNode.current) return;
+      wasDragged.current = true;
+      const graph = graphRef.current;
+      if (!graph) return;
+
+      const pos = sigma.viewportToGraph(event);
+      graph.setNodeAttribute(draggedNode.current, "x", pos.x);
+      graph.setNodeAttribute(draggedNode.current, "y", pos.y);
+    });
+
+    sigma.getMouseCaptor().on("mouseup", () => {
+      if (isDragging.current) {
+        isDragging.current = false;
+        draggedNode.current = null;
+        sigma.getCamera().enable();
+      }
+    });
+
+    // Semantic zoom: adjust label threshold
+    sigma.getCamera().on("updated", () => {
+      const ratio = sigma.getCamera().ratio;
+      const tier = getSigmaZoomTier(ratio);
+      const threshold = labelThresholdForTier(tier);
+      sigma.setSetting("labelRenderedSizeThreshold", threshold);
+    });
+
+    sigmaRef.current = sigma;
+
+    // If there's already a focused node, animate to it
+    if (focusRef.current.focusedNodeId) {
+      requestAnimationFrame(() => {
+        const fid = focusRef.current.focusedNodeId;
+        if (fid && graphData.hasNode(fid)) {
+          const nodeAttrs = graphData.getNodeAttributes(fid);
+          const nodeDisplayData = sigma.getNodeDisplayData(fid);
+          if (nodeDisplayData) {
+            const graphCoords = sigma.viewportToFramedGraph(
+              sigma.graphToViewport({ x: nodeAttrs.x as number, y: nodeAttrs.y as number })
+            );
+            sigma.getCamera().animate(
+              { x: graphCoords.x, y: graphCoords.y, ratio: 0.3 },
+              { duration: 600 }
+            );
+          }
+        }
+      });
+    }
+
+    return () => {
+      sigma.kill();
+      sigmaRef.current = null;
+    };
+  }, [graphData]);
+
+  // Refresh sigma when focus/expand/trace state changes
+  useEffect(() => {
+    sigmaRef.current?.refresh();
+  }, [focusedNodeId, expandedNodeId, tracedVariableId]);
+
+  if (!allNodes || filteredNodes.length === 0) {
+    return (
+      <div
+        className="flex items-center justify-center"
+        style={{
+          position: "absolute",
+          inset: 0,
+          background: "var(--bg-primary)",
+          color: "var(--text-muted)",
+        }}
+      >
+        <span className="text-sm font-mono">Loading graph...</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        position: "absolute",
+        inset: 0,
+        background: "var(--bg-primary)",
+      }}
+    />
+  );
+}
+
+export default AtlasOverview;
