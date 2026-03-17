@@ -340,16 +340,29 @@ def _get_module_checksum(graph, module_path: str) -> str | None:  # type: ignore
 # ---------------------------------------------------------------------------
 
 
-def index_file(file_path: str, repo_root: str = "") -> ParseResult:
+def index_file(
+    file_path: str,
+    repo_root: str = "",
+    deferred_edges: BatchUpserter | None = None,
+) -> ParseResult:
     """Index a single Python file into the graph using batched upserts.
 
     Reads the file, parses its AST once, and upserts all nodes/edges to FalkorDB
     in ~16 batched UNWIND queries instead of hundreds of individual queries.
     Skips re-indexing if the file checksum has not changed.
 
+    When ``deferred_edges`` is provided, cross-file relationship edges (CALLS,
+    INHERITS, IMPORTS) and dataflow edges (PASSES_TO, FEEDS) are added to that
+    external batch instead of being flushed immediately.  This supports two-pass
+    indexing where all nodes are created first, then cross-file edges are flushed
+    once all target nodes exist.
+
     Args:
         file_path: Absolute or relative path to the Python file.
         repo_root: Root of the repository (for computing relative module paths).
+        deferred_edges: Optional external BatchUpserter to accumulate cross-file
+            edges.  When ``None`` (the default), all edges are flushed immediately
+            (backward-compatible behaviour for the file watcher).
 
     Returns:
         The ParseResult from parsing the file.
@@ -396,6 +409,9 @@ def index_file(file_path: str, repo_root: str = "") -> ParseResult:
     # Use BatchUpserter for all graph writes
     batch = BatchUpserter(graph)
 
+    # Determine where cross-file edges go
+    edge_batch = deferred_edges if deferred_edges is not None else batch
+
     # Add all structural nodes
     for node in result.nodes:
         batch.add_node(node, checksum=result.checksum)
@@ -404,10 +420,10 @@ def index_file(file_path: str, repo_root: str = "") -> ParseResult:
     for edge in result.edges:
         batch.add_edge(edge)
 
-    # Extract relationships (CALLS, INHERITS, IMPORTS)
+    # Extract relationships (CALLS, INHERITS, IMPORTS) — route to edge_batch
     rel_edges = extract_relationships(source, rel_path, result.nodes, tree=tree)
     for rel_edge in rel_edges:
-        batch.add_relationship_edge(rel_edge)
+        edge_batch.add_relationship_edge(rel_edge)
 
     # Extract statement-level nodes and edges
     stmt_result = extract_statements(source, rel_path, result.nodes, tree=tree)
@@ -423,15 +439,19 @@ def index_file(file_path: str, repo_root: str = "") -> ParseResult:
     for var_edge in var_result.edges:
         batch.add_variable_edge(var_edge)
 
-    # Extract data flow edges (PASSES_TO, FEEDS)
+    # Extract data flow edges (PASSES_TO, FEEDS) — route to edge_batch
     df_result = extract_dataflow(
         source, rel_path, result.nodes, rel_edges, var_result.nodes, var_result.edges, tree=tree
     )
     for df_edge in df_result.edges:
-        batch.add_dataflow_edge(df_edge)
+        edge_batch.add_dataflow_edge(df_edge)
 
-    # Flush all batched queries at once
-    batch.flush()
+    if deferred_edges is not None:
+        # Two-pass mode: flush only nodes and intra-file edges now
+        batch.flush_nodes_only()
+    else:
+        # Single-file mode (file watcher): flush everything immediately
+        batch.flush()
 
     return result
 
@@ -463,10 +483,15 @@ def _collect_python_files(repo_path: str) -> list[str]:
 
 
 def index_repository(repo_path: str) -> dict[str, int]:
-    """Index all Python files in a repository.
+    """Index all Python files in a repository using two-pass indexing.
 
-    Walks the directory tree, skipping hidden directories and common non-source
-    directories, and indexes each .py file into the graph.
+    **Pass 1 — Nodes:** For each file, parses the AST and flushes structural nodes
+    and intra-file edges (DEFINES, CONTAINS, NEXT, etc.) immediately so that all
+    target nodes exist in the graph.
+
+    **Pass 2 — Cross-file edges:** Flushes all accumulated cross-file relationship
+    edges (CALLS, INHERITS, IMPORTS) and dataflow edges (PASSES_TO, FEEDS) in a
+    single batch, now that every target node is guaranteed to be present.
 
     Args:
         repo_path: Path to the repository root.
@@ -481,18 +506,27 @@ def index_repository(repo_path: str) -> dict[str, int]:
     if not os.path.isdir(repo_path):
         raise IndexingError(f"Repository path does not exist: {repo_path}")
 
+    graph = get_graph()
     stats: dict[str, int] = {"files_indexed": 0, "files_skipped": 0, "nodes_created": 0, "edges_created": 0}
     files = _collect_python_files(repo_path)
 
+    # Shared batch that accumulates cross-file edges across all files
+    deferred = BatchUpserter(graph)
+
+    # Pass 1: index nodes and intra-file edges; defer cross-file edges
     for abs_file in files:
         try:
-            result = index_file(abs_file, repo_root=repo_path)
+            result = index_file(abs_file, repo_root=repo_path, deferred_edges=deferred)
             stats["files_indexed"] += 1
             stats["nodes_created"] += len(result.nodes)
             stats["edges_created"] += len(result.edges)
         except IndexingError:
             logger.exception("Failed to index: %s", abs_file)
             stats["files_skipped"] += 1
+
+    # Pass 2: flush all cross-file edges now that every target node exists
+    edge_count = deferred.flush_cross_file_edges()
+    logger.info("Flushed %d cross-file edge queries", edge_count)
 
     logger.info("Indexing complete: %s", stats)
     return stats
@@ -502,10 +536,14 @@ async def index_repository_async(
     repo_path: str,
     progress_callback: Callable[[str, int, int], Awaitable[None]] | None = None,
 ) -> dict[str, int]:
-    """Index all Python files in a repository asynchronously with progress reporting.
+    """Index all Python files in a repository asynchronously using two-pass indexing.
 
-    Runs file indexing in a thread pool to avoid blocking the event loop,
-    and invokes the progress callback after each file.
+    **Pass 1 — Nodes:** Runs file indexing in a thread pool to avoid blocking the
+    event loop.  Structural nodes and intra-file edges are flushed per-file while
+    cross-file edges are accumulated in a shared batch.
+
+    **Pass 2 — Cross-file edges:** After all files are processed, flushes all
+    accumulated relationship and dataflow edges in one batch.
 
     Args:
         repo_path: Path to the repository root.
@@ -521,13 +559,18 @@ async def index_repository_async(
     if not os.path.isdir(repo_path):
         raise IndexingError(f"Repository path does not exist: {repo_path}")
 
+    graph = get_graph()
     stats: dict[str, int] = {"files_indexed": 0, "files_skipped": 0, "nodes_created": 0, "edges_created": 0}
     files = _collect_python_files(repo_path)
     total = len(files)
 
+    # Shared batch that accumulates cross-file edges across all files
+    deferred = BatchUpserter(graph)
+
+    # Pass 1: index nodes and intra-file edges; defer cross-file edges
     for i, abs_file in enumerate(files, 1):
         try:
-            result = await asyncio.to_thread(index_file, abs_file, repo_path)
+            result = await asyncio.to_thread(index_file, abs_file, repo_path, deferred)
             stats["files_indexed"] += 1
             stats["nodes_created"] += len(result.nodes)
             stats["edges_created"] += len(result.edges)
@@ -538,6 +581,10 @@ async def index_repository_async(
         if progress_callback is not None:
             rel_file = os.path.relpath(abs_file, repo_path)
             await progress_callback(rel_file, i, total)
+
+    # Pass 2: flush all cross-file edges now that every target node exists
+    edge_count = await asyncio.to_thread(deferred.flush_cross_file_edges)
+    logger.info("Flushed %d cross-file edge queries", edge_count)
 
     logger.info("Async indexing complete: %s", stats)
     return stats

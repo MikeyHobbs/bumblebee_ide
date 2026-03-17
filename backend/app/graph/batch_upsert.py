@@ -253,15 +253,26 @@ class BatchUpserter:
 
     def flush(self) -> int:
         """Execute all batched UNWIND queries. Returns total query count."""
+        count = self.flush_nodes_only()
+        count += self.flush_cross_file_edges()
+        return count
+
+    def flush_nodes_only(self) -> int:
+        """Flush only structural nodes and intra-file edges (not cross-file relationships).
+
+        This flushes modules, classes, functions, defines, statements, control flows,
+        branches, contains, next, variables, assigns, mutates, reads, and returns.
+        Cross-file edges (CALLS, INHERITS, IMPORTS, PASSES_TO, FEEDS) are left in the batch.
+
+        Returns:
+            Number of queries executed.
+        """
         count = 0
         batch_map: list[tuple[str, list[dict[str, object]]]] = [
             (queries.BATCH_MERGE_MODULES, self._modules),
             (queries.BATCH_MERGE_CLASSES, self._classes),
             (queries.BATCH_MERGE_FUNCTIONS, self._functions),
             (queries.BATCH_MERGE_DEFINES, self._defines),
-            (queries.BATCH_MERGE_CALLS, self._calls),
-            (queries.BATCH_MERGE_INHERITS, self._inherits),
-            (queries.BATCH_MERGE_IMPORTS, self._imports),
             (queries.BATCH_MERGE_STATEMENTS, self._statements),
             (queries.BATCH_MERGE_CONTROL_FLOWS, self._control_flows),
             (queries.BATCH_MERGE_BRANCHES, self._branches),
@@ -272,6 +283,43 @@ class BatchUpserter:
             (queries.BATCH_MERGE_MUTATES, self._mutates),
             (queries.BATCH_MERGE_READS, self._reads),
             (queries.BATCH_MERGE_RETURNS, self._returns),
+        ]
+        for query, items in batch_map:
+            if items:
+                self._graph.query(query, params={"items": items})
+                count += 1
+        # Clear flushed lists so they aren't flushed again
+        self._modules.clear()
+        self._classes.clear()
+        self._functions.clear()
+        self._defines.clear()
+        self._statements.clear()
+        self._control_flows.clear()
+        self._branches.clear()
+        self._contains.clear()
+        self._next.clear()
+        self._variables.clear()
+        self._assigns.clear()
+        self._mutates.clear()
+        self._reads.clear()
+        self._returns.clear()
+        logger.debug("BatchUpserter flushed %d node/intra-file queries", count)
+        return count
+
+    def flush_cross_file_edges(self) -> int:
+        """Flush only cross-file relationship and dataflow edges.
+
+        This flushes CALLS, INHERITS, IMPORTS, PASSES_TO, and FEEDS edges.
+        Should be called after all nodes have been created in the graph.
+
+        Returns:
+            Number of queries executed.
+        """
+        count = 0
+        batch_map: list[tuple[str, list[dict[str, object]]]] = [
+            (queries.BATCH_MERGE_CALLS, self._calls),
+            (queries.BATCH_MERGE_INHERITS, self._inherits),
+            (queries.BATCH_MERGE_IMPORTS, self._imports),
             (queries.BATCH_MERGE_PASSES_TO, self._passes_to),
             (queries.BATCH_MERGE_FEEDS, self._feeds),
         ]
@@ -279,5 +327,11 @@ class BatchUpserter:
             if items:
                 self._graph.query(query, params={"items": items})
                 count += 1
-        logger.debug("BatchUpserter flushed %d queries", count)
+        # Clear flushed lists
+        self._calls.clear()
+        self._inherits.clear()
+        self._imports.clear()
+        self._passes_to.clear()
+        self._feeds.clear()
+        logger.debug("BatchUpserter flushed %d cross-file edge queries", count)
         return count

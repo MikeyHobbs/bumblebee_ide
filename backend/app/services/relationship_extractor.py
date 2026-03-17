@@ -50,12 +50,53 @@ def _build_scope_map(nodes: list[ParsedNode]) -> dict[str, ParsedNode]:
     return scope_map
 
 
+def _resolve_relative_import(module_name: str, from_module_text: str) -> str:
+    """Resolve a relative import path to an absolute qualified module name.
+
+    Args:
+        module_name: The current module's qualified name (e.g. ``app.services.bar``).
+        from_module_text: The raw import text including leading dots (e.g. ``.foo``, ``..utils``, ``.``).
+
+    Returns:
+        Absolute qualified module name (e.g. ``app.services.foo``).
+    """
+    # Count leading dots to determine how many levels up
+    dots = 0
+    for ch in from_module_text:
+        if ch == ".":
+            dots += 1
+        else:
+            break
+    remainder = from_module_text[dots:]
+
+    # Go up from the current package (parent of module_name)
+    parts = module_name.split(".")
+    # First dot means "current package" (parent of this module), each extra dot goes one more level up
+    levels_up = dots
+    if levels_up >= len(parts):
+        # Can't go above the root — return what we can
+        base = ""
+    else:
+        base = ".".join(parts[: len(parts) - levels_up])
+
+    if remainder and base:
+        return f"{base}.{remainder}"
+    elif remainder:
+        return remainder
+    return base
+
+
 def _build_import_map(root: tree_sitter.Node, module_name: str) -> dict[str, str]:
     """Build a map of imported names to their source modules.
 
+    Handles both absolute imports (``from app.foo import bar``) and relative
+    imports (``from .foo import bar``, ``from ..utils import helper``).  Relative
+    imports are resolved against *module_name* so that the resulting qualified
+    names match the file-path-based node names stored in the graph.
+
     Args:
         root: The root tree-sitter node of the module.
-        module_name: The qualified module name.
+        module_name: The qualified module name (e.g. ``app.services.bar``).
 
     Returns:
         Dict mapping local imported names to their qualified source.
@@ -84,7 +125,13 @@ def _build_import_map(root: tree_sitter.Node, module_name: str) -> dict[str, str
             module_node = child.child_by_field_name("module_name")
             if module_node is None:
                 continue
-            from_module = module_node.text.decode("utf-8")
+            from_module_raw = module_node.text.decode("utf-8")
+
+            # Resolve relative imports (e.g. ".foo", "..utils", ".")
+            if module_node.type == "relative_import":
+                from_module = _resolve_relative_import(module_name, from_module_raw)
+            else:
+                from_module = from_module_raw
 
             for name_child in child.named_children:
                 if name_child == module_node:
@@ -329,7 +376,12 @@ def _extract_imports(root: tree_sitter.Node, module_name: str) -> list[Relations
             module_node = child.child_by_field_name("module_name")
             if module_node is None:
                 continue
-            target = module_node.text.decode("utf-8")
+            target_raw = module_node.text.decode("utf-8")
+            # Resolve relative imports to absolute qualified names
+            if module_node.type == "relative_import":
+                target = _resolve_relative_import(module_name, target_raw)
+            else:
+                target = target_raw
             edges.append(RelationshipEdge(
                 edge_type="IMPORTS",
                 source_name=module_name,
