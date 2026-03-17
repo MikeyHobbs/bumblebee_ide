@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 
@@ -47,4 +48,4 @@ function BranchNode({ data }: NodeProps) {
   );
 }
 
-export default BranchNode;
+export default memo(BranchNode);

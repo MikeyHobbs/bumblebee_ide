@@ -11,7 +11,7 @@ import type {
   VariableSearchResult,
 } from "@/types/graph";
 
-async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
+export async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   if (!res.ok) {
     const text = await res.text().catch(() => "Unknown error");
@@ -302,6 +302,17 @@ export function useAllEdges() {
   });
 }
 
+export interface OverviewNode { id: string; kind: string; name: string; module_path: string; }
+export interface OverviewEdge { type: string; source: string; target: string; }
+
+export function useGraphOverview() {
+  return useQuery({
+    queryKey: ["graph-overview"],
+    queryFn: () => apiFetch<{ nodes: OverviewNode[]; edges: OverviewEdge[] }>("/api/v1/graph-overview"),
+    staleTime: 30_000,
+  });
+}
+
 export function useImportDirectory() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -318,6 +329,7 @@ export function useImportDirectory() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["logic-nodes"] });
       void queryClient.invalidateQueries({ queryKey: ["all-edges"] });
+      void queryClient.invalidateQueries({ queryKey: ["graph-overview"] });
     },
   });
 }

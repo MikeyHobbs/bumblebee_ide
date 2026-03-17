@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 
 function LoopGroupNode({ data }: NodeProps) {
@@ -27,4 +28,4 @@ function LoopGroupNode({ data }: NodeProps) {
   );
 }
 
-export default LoopGroupNode;
+export default memo(LoopGroupNode);

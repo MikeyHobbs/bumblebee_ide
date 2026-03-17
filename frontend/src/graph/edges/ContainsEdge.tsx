@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { BaseEdge, getSmoothStepPath } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
 
@@ -30,4 +31,4 @@ function ContainsEdge({
   );
 }
 
-export default ContainsEdge;
+export default memo(ContainsEdge);

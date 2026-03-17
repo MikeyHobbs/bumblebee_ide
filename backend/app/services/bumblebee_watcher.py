@@ -11,13 +11,15 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from app.graph import logic_queries as lq
 from app.graph.client import get_graph
 from app.services.deserializer import (
     DeserializationReport,
-    _load_edge,
-    _load_flow,
-    _load_logic_node,
-    _load_variable,
+    _chunked_query,
+    _collect_flow_edges,
+    _prepare_flow_item,
+    _prepare_node_item,
+    _prepare_variable_item,
 )
 
 logger = logging.getLogger(__name__)
@@ -215,39 +217,72 @@ class BumblebeeWatcher:
             data: Parsed JSON data from a nodes/*.json file.
             report: Report to accumulate counts and errors.
         """
-        _load_logic_node(graph, data, "merge", report)
+        item = _prepare_node_item(data)
+        if item:
+            _chunked_query(graph, lq.BATCH_MERGE_LOGIC_NODES, [item])
+            report.nodes_loaded += 1
 
     def _sync_variables(self, graph: Any, data: dict[str, Any], report: DeserializationReport) -> None:
-        """Sync a variables file to the graph.
+        """Sync a variables file to the graph using batch query.
 
         Args:
             graph: FalkorDB graph instance.
             data: Parsed JSON data from a variables/var_*.json file.
             report: Report to accumulate counts and errors.
         """
+        items = []
         for var_data in data.get("variables", []):
-            _load_variable(graph, var_data, report)
+            item = _prepare_variable_item(var_data)
+            if item:
+                items.append(item)
+                report.variables_loaded += 1
+        if items:
+            _chunked_query(graph, lq.BATCH_MERGE_VARIABLES, items)
 
     def _sync_edges(self, graph: Any, data: dict[str, Any], report: DeserializationReport) -> None:
-        """Sync an edges manifest file to the graph.
+        """Sync an edges manifest file to the graph using batch queries.
 
         Args:
             graph: FalkorDB graph instance.
             data: Parsed JSON data from edges/manifest.json.
             report: Report to accumulate counts and errors.
         """
+        edge_buckets: dict[str, list[dict[str, Any]]] = {}
         for edge_data in data.get("edges", []):
-            _load_edge(graph, edge_data, report)
+            edge_type = edge_data.get("type", "")
+            source = edge_data.get("source", "")
+            target = edge_data.get("target", "")
+            if not edge_type or not source or not target:
+                continue
+            if edge_type not in lq.BATCH_EDGE_MERGE_QUERIES:
+                continue
+            props = edge_data.get("properties", {})
+            item: dict[str, Any] = {"source_id": source, "target_id": target}
+            item.update(props)
+            edge_buckets.setdefault(edge_type, []).append(item)
+            report.edges_loaded += 1
+        for etype, items in edge_buckets.items():
+            _chunked_query(graph, lq.BATCH_EDGE_MERGE_QUERIES[etype], items)
 
     def _sync_flow(self, graph: Any, data: dict[str, Any], report: DeserializationReport) -> None:
-        """Sync a single Flow JSON file to the graph.
+        """Sync a single Flow JSON file to the graph using batch queries.
 
         Args:
             graph: FalkorDB graph instance.
             data: Parsed JSON data from a flows/flow_*.json file.
             report: Report to accumulate counts and errors.
         """
-        _load_flow(graph, data, report)
+        flow_item = _prepare_flow_item(data)
+        if flow_item:
+            _chunked_query(graph, lq.BATCH_MERGE_FLOWS, [flow_item])
+            report.flows_loaded += 1
+            step_of_items: list[dict[str, Any]] = []
+            contains_flow_items: list[dict[str, Any]] = []
+            _collect_flow_edges(data, step_of_items, contains_flow_items)
+            if step_of_items:
+                _chunked_query(graph, lq.BATCH_EDGE_MERGE_QUERIES["STEP_OF"], step_of_items)
+            if contains_flow_items:
+                _chunked_query(graph, lq.BATCH_EDGE_MERGE_QUERIES["CONTAINS_FLOW"], contains_flow_items)
 
 
 def _broadcast_event(event: str, data: dict[str, Any]) -> None:

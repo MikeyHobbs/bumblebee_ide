@@ -23,7 +23,8 @@ CREATE INDEX FOR (v:Variable) ON (v.scope);
 CREATE INDEX FOR (v:Variable) ON (v.origin_node_id);
 CREATE INDEX FOR (f:Flow) ON (f.id);
 CREATE INDEX FOR (f:Flow) ON (f.name);
-CREATE INDEX FOR (f:Flow) ON (f.parent_flow_id)
+CREATE INDEX FOR (f:Flow) ON (f.parent_flow_id);
+CREATE INDEX FOR (n:LogicNode) ON (n.module_path, n.name)
 """
 
 # Split into individual statements for execution
@@ -100,6 +101,22 @@ MATCH (n:LogicNode)
 WHERE n.status = 'active'
 RETURN n
 ORDER BY n.name
+"""
+
+# Lightweight overview queries — return only the fields needed for the
+# knowledge-graph canvas (no source_text, no params, etc.)
+GRAPH_OVERVIEW_NODES = """
+MATCH (n:LogicNode)
+WHERE n.status = 'active' AND n.kind IN $kinds
+RETURN n.id AS id, n.kind AS kind, n.name AS name, n.module_path AS module_path
+ORDER BY n.name
+"""
+
+GRAPH_OVERVIEW_EDGES = """
+MATCH (s:LogicNode)-[r]->(t:LogicNode)
+WHERE s.status = 'active' AND t.status = 'active'
+  AND s.kind IN $kinds AND t.kind IN $kinds
+RETURN type(r) AS type, s.id AS source, t.id AS target
 """
 
 
@@ -511,4 +528,176 @@ SET v.name = item.name,
     v.is_parameter = item.is_parameter,
     v.is_attribute = item.is_attribute,
     v.created_at = item.created_at
+"""
+
+BATCH_MERGE_FLOWS = """
+UNWIND $items AS item
+MERGE (f:Flow {id: item.id})
+SET f.name = item.name,
+    f.description = item.description,
+    f.entry_point = item.entry_point,
+    f.exit_points = item.exit_points,
+    f.node_ids = item.node_ids,
+    f.sub_flow_ids = item.sub_flow_ids,
+    f.parent_flow_id = item.parent_flow_id,
+    f.promoted_node_id = item.promoted_node_id,
+    f.created_at = item.created_at,
+    f.updated_at = item.updated_at
+"""
+
+# --- Batch edge operations (UNWIND) ---
+# FalkorDB requires literal relationship types, so each edge type needs its own template.
+
+BATCH_MERGE_EDGES_CALLS = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:LogicNode {id: item.target_id})
+MERGE (s)-[r:CALLS]->(t)
+SET r.weight = coalesce(item.weight, 1)
+"""
+
+BATCH_MERGE_EDGES_DEPENDS_ON = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:LogicNode {id: item.target_id})
+MERGE (s)-[r:DEPENDS_ON]->(t)
+SET r.weight = coalesce(item.weight, 1)
+"""
+
+BATCH_MERGE_EDGES_IMPLEMENTS = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:LogicNode {id: item.target_id})
+MERGE (s)-[r:IMPLEMENTS]->(t)
+SET r.weight = coalesce(item.weight, 1)
+"""
+
+BATCH_MERGE_EDGES_VALIDATES = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:LogicNode {id: item.target_id})
+MERGE (s)-[r:VALIDATES]->(t)
+SET r.weight = coalesce(item.weight, 1)
+"""
+
+BATCH_MERGE_EDGES_TRANSFORMS = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:LogicNode {id: item.target_id})
+MERGE (s)-[r:TRANSFORMS]->(t)
+SET r.weight = coalesce(item.weight, 1)
+"""
+
+BATCH_MERGE_EDGES_INHERITS = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:LogicNode {id: item.target_id})
+MERGE (s)-[r:INHERITS]->(t)
+SET r.weight = coalesce(item.weight, 1)
+"""
+
+BATCH_MERGE_EDGES_MEMBER_OF = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:LogicNode {id: item.target_id})
+MERGE (s)-[r:MEMBER_OF]->(t)
+SET r.access = coalesce(item.access, 'public')
+"""
+
+BATCH_MERGE_EDGES_ASSIGNS = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:Variable {id: item.target_id})
+MERGE (s)-[r:ASSIGNS]->(t)
+SET r.is_rebind = coalesce(item.is_rebind, false)
+"""
+
+BATCH_MERGE_EDGES_MUTATES = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:Variable {id: item.target_id})
+MERGE (s)-[r:MUTATES]->(t)
+SET r.weight = coalesce(item.weight, 1)
+"""
+
+BATCH_MERGE_EDGES_READS = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:Variable {id: item.target_id})
+MERGE (s)-[r:READS]->(t)
+SET r.weight = coalesce(item.weight, 1)
+"""
+
+BATCH_MERGE_EDGES_RETURNS = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:Variable {id: item.target_id})
+MERGE (s)-[r:RETURNS]->(t)
+SET r.weight = coalesce(item.weight, 1)
+"""
+
+BATCH_MERGE_EDGES_PASSES_TO = """
+UNWIND $items AS item
+MATCH (s:Variable {id: item.source_id})
+MATCH (t:Variable {id: item.target_id})
+MERGE (s)-[r:PASSES_TO]->(t)
+SET r.weight = coalesce(item.weight, 1)
+"""
+
+BATCH_MERGE_EDGES_FEEDS = """
+UNWIND $items AS item
+MATCH (s:Variable {id: item.source_id})
+MATCH (t:Variable {id: item.target_id})
+MERGE (s)-[r:FEEDS]->(t)
+SET r.weight = coalesce(item.weight, 1)
+"""
+
+BATCH_MERGE_EDGES_STEP_OF = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:Flow {id: item.target_id})
+MERGE (s)-[r:STEP_OF]->(t)
+SET r.step_order = item.step_order
+"""
+
+BATCH_MERGE_EDGES_CONTAINS_FLOW = """
+UNWIND $items AS item
+MATCH (s:Flow {id: item.source_id})
+MATCH (t:Flow {id: item.target_id})
+MERGE (s)-[r:CONTAINS_FLOW]->(t)
+SET r.step_order = item.step_order
+"""
+
+BATCH_MERGE_EDGES_PROMOTED_TO = """
+UNWIND $items AS item
+MATCH (s:Flow {id: item.source_id})
+MATCH (t:LogicNode {id: item.target_id})
+MERGE (s)-[r:PROMOTED_TO]->(t)
+"""
+
+# Mapping from edge type string to batch UNWIND query template
+BATCH_EDGE_MERGE_QUERIES: dict[str, str] = {
+    "CALLS": BATCH_MERGE_EDGES_CALLS,
+    "DEPENDS_ON": BATCH_MERGE_EDGES_DEPENDS_ON,
+    "IMPLEMENTS": BATCH_MERGE_EDGES_IMPLEMENTS,
+    "VALIDATES": BATCH_MERGE_EDGES_VALIDATES,
+    "TRANSFORMS": BATCH_MERGE_EDGES_TRANSFORMS,
+    "INHERITS": BATCH_MERGE_EDGES_INHERITS,
+    "MEMBER_OF": BATCH_MERGE_EDGES_MEMBER_OF,
+    "ASSIGNS": BATCH_MERGE_EDGES_ASSIGNS,
+    "MUTATES": BATCH_MERGE_EDGES_MUTATES,
+    "READS": BATCH_MERGE_EDGES_READS,
+    "RETURNS": BATCH_MERGE_EDGES_RETURNS,
+    "PASSES_TO": BATCH_MERGE_EDGES_PASSES_TO,
+    "FEEDS": BATCH_MERGE_EDGES_FEEDS,
+    "STEP_OF": BATCH_MERGE_EDGES_STEP_OF,
+    "CONTAINS_FLOW": BATCH_MERGE_EDGES_CONTAINS_FLOW,
+    "PROMOTED_TO": BATCH_MERGE_EDGES_PROMOTED_TO,
+}
+
+# Batch lookup for incremental imports — eliminates N+1 _find_existing_node calls
+BATCH_FIND_EXISTING_NODES = """
+UNWIND $lookups AS lk
+OPTIONAL MATCH (n:LogicNode {name: lk.name, module_path: lk.module_path, status: 'active'})
+RETURN lk.name AS name, lk.module_path AS module_path, n.id AS id, n.ast_hash AS ast_hash
 """

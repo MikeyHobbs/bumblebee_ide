@@ -61,6 +61,9 @@ export function useWebSocket(options?: UseWebSocketOptions) {
             void queryClient.invalidateQueries({
               queryKey: ["all-edges"],
             });
+            void queryClient.invalidateQueries({
+              queryKey: ["graph-overview"],
+            });
             break;
           case "node:pulse": {
             const nodeId =

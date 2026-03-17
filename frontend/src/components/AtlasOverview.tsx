@@ -1,14 +1,12 @@
-import { useEffect, useRef, useMemo, useCallback } from "react";
+import { useEffect, useRef, useMemo, useCallback, memo } from "react";
 import Graph from "graphology";
-import forceAtlas2 from "graphology-layout-forceatlas2";
+import FA2Layout from "graphology-layout-forceatlas2/worker";
 
 import Sigma from "sigma";
 import { useGraphStore } from "@/store/graphStore";
 import { useEditorStore } from "@/store/editorStore";
-import { useLogicNodes, useAllEdges, useNodeVariables } from "@/api/client";
+import { useGraphOverview, useNodeVariables, apiFetch } from "@/api/client";
 import { getSigmaZoomTier, labelThresholdForTier } from "@/graph/layout/semanticZoom";
-
-const HIGH_LEVEL_KINDS = new Set(["function", "method", "class", "flow_function"]);
 
 const VARIABLE_COLOR = "#ffd54f";
 const PARAM_COLOR = "#81d4fa";
@@ -30,12 +28,12 @@ function generatePaletteColor(index: number): string {
 
 function sizeForKind(kind: string): number {
   switch (kind) {
-    case "class": return 10;
-    case "module": return 12;
+    case "class": return 5;
+    case "module": return 6;
     case "function":
     case "method":
-    case "flow_function": return 6;
-    default: return 4;
+    case "flow_function": return 3;
+    default: return 2;
   }
 }
 
@@ -80,9 +78,8 @@ function AtlasOverview() {
   const focusRef = useRef({ focusedNodeId, expandedNodeId });
   focusRef.current = { focusedNodeId, expandedNodeId };
 
-  // Data fetching
-  const { data: allNodes } = useLogicNodes(undefined, undefined, 10000);
-  const { data: allEdgesData } = useAllEdges();
+  // Data fetching — lightweight overview (no source_text)
+  const { data: overview, isError: overviewError } = useGraphOverview();
 
   // Fetch actual variable node data for the expanded node
   const { data: expandedVariables } = useNodeVariables(expandedNodeId);
@@ -99,22 +96,10 @@ function AtlasOverview() {
   // For trace, re-use node variables on the traced variable's origin
   const { data: traceVariables } = useNodeVariables(tracedRealId);
 
-  // Filter to high-level nodes only
-  const filteredNodes = useMemo(() => {
-    if (!allNodes) return [];
-    return allNodes.filter((n) => HIGH_LEVEL_KINDS.has(n.kind));
-  }, [allNodes]);
-
-  // Filter edges to only those connecting filtered nodes
-  const filteredEdges = useMemo(() => {
-    if (!allEdgesData || filteredNodes.length === 0) return [];
-    const ids = new Set(filteredNodes.map((n) => n.id));
-    return allEdgesData.filter((e) => ids.has(e.source) && ids.has(e.target));
-  }, [allEdgesData, filteredNodes]);
-
-  const nodeCount = filteredNodes.length;
-  const edgeCount = filteredEdges.length;
-  const allEdgesLen = allEdgesData?.length ?? 0;
+  const overviewNodes = overview?.nodes ?? [];
+  const overviewEdges = overview?.edges ?? [];
+  const nodeCount = overviewNodes.length;
+  const edgeCount = overviewEdges.length;
 
   // Build graphology graph
   const graphData = useMemo(() => {
@@ -122,11 +107,9 @@ function AtlasOverview() {
 
     // Build class membership map from MEMBER_OF edges
     const classMap = new Map<string, string>();
-    if (allEdgesData) {
-      for (const e of allEdgesData) {
-        if (e.type === "MEMBER_OF") {
-          classMap.set(e.source, e.target);
-        }
+    for (const e of overviewEdges) {
+      if (e.type === "MEMBER_OF") {
+        classMap.set(e.source, e.target);
       }
     }
 
@@ -143,15 +126,15 @@ function AtlasOverview() {
       return color;
     }
 
-    // Compute degree map from filtered edges
+    // Compute degree map from overview edges
     const degreeMap = new Map<string, number>();
-    for (const e of filteredEdges) {
+    for (const e of overviewEdges) {
       degreeMap.set(e.source, (degreeMap.get(e.source) ?? 0) + 1);
       degreeMap.set(e.target, (degreeMap.get(e.target) ?? 0) + 1);
     }
 
     const nodeIdSet = new Set<string>();
-    for (const n of filteredNodes) {
+    for (const n of overviewNodes) {
       if (nodeIdSet.has(n.id)) continue;
       nodeIdSet.add(n.id);
 
@@ -160,32 +143,30 @@ function AtlasOverview() {
       const color = getGroupColor(groupKey);
 
       const degree = degreeMap.get(n.id) ?? 0;
-      const size = sizeForKind(n.kind) + Math.log2(1 + degree) * 1;
+      const size = sizeForKind(n.kind) + Math.min(Math.log2(1 + degree) * 0.5, 3);
 
       g.addNode(n.id, {
-        x: Math.random() * 10,
-        y: Math.random() * 10,
+        x: 0,
+        y: 0,
         size,
         color,
         originalColor: color,
         label: localName(n.name),
         kind: n.kind,
         modulePath: n.module_path,
-        sourceText: n.source_text,
         name: n.name,
         isVariable: false,
       });
     }
 
-    for (const e of filteredEdges) {
+    for (const e of overviewEdges) {
       if (nodeIdSet.has(e.source) && nodeIdSet.has(e.target)) {
         try {
           g.addEdge(e.source, e.target, {
-            color: "rgba(255,255,255,0.06)",
-            size: 0.3,
-            type: "arrow",
+            color: "rgba(255,255,255,0.008)",
+            size: 0.1,
             edgeType: e.type,
-            weight: 1,
+            weight: 3,
           });
         } catch {
           // skip duplicate edges
@@ -193,9 +174,8 @@ function AtlasOverview() {
       }
     }
 
-    // Add invisible same-file edges so co-located nodes cluster together.
-    // Without these, nodes in the same file that don't directly call each
-    // other have zero attraction and scatter randomly across the canvas.
+    // Add invisible star-topology edges so co-located nodes cluster together.
+    // Uses a star pattern (first node as hub) instead of O(n²) all-pairs.
     const fileGroups = new Map<string, string[]>();
     g.forEachNode((node, attrs) => {
       const fp = attrs.modulePath as string;
@@ -206,44 +186,32 @@ function AtlasOverview() {
     });
     for (const members of fileGroups.values()) {
       if (members.length < 2) continue;
-      // Connect every pair in the file with a weak hidden edge
-      for (let i = 0; i < members.length; i++) {
-        for (let j = i + 1; j < members.length; j++) {
-          try {
-            g.addEdge(members[i], members[j], {
-              color: "rgba(0,0,0,0)",
-              size: 0,
-              hidden: true,
-              weight: 0.3,
-              edgeType: "SAME_FILE",
-            });
-          } catch {
-            // skip duplicate
-          }
+      const hub = members[0]!;
+      for (let i = 1; i < members.length; i++) {
+        try {
+          g.addEdge(hub, members[i]!, {
+            color: "rgba(0,0,0,0)",
+            size: 0,
+            hidden: true,
+            weight: 1,
+            edgeType: "SAME_FILE",
+          });
+        } catch {
+          // skip duplicate
         }
       }
     }
 
-    // Run layout before returning so positions are set before Sigma renders
-    if (g.order > 0) {
-      forceAtlas2.assign(g, {
-        iterations: 500,
-        settings: {
-          barnesHutOptimize: true,
-          adjustSizes: false,
-          linLogMode: false,
-          strongGravityMode: false,
-          gravity: 2,
-          scalingRatio: 1,
-          edgeWeightInfluence: 1,
-          slowDown: 2,
-        },
-      });
-    }
+    // Random scatter so FA2 starts from an unbiased spread
+    const spread = Math.max(Math.sqrt(g.order) * 10, 50);
+    g.forEachNode((id) => {
+      g.setNodeAttribute(id, "x", (Math.random() - 0.5) * spread);
+      g.setNodeAttribute(id, "y", (Math.random() - 0.5) * spread);
+    });
 
-    return g;
+    return { g };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodeCount, edgeCount, allEdgesLen]);
+  }, [nodeCount, edgeCount]);
 
   // Handle variable expansion: show real variable nodes near the parent
   useEffect(() => {
@@ -387,22 +355,24 @@ function AtlasOverview() {
   // Create and manage Sigma instance
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || graphData.order === 0) return;
-    graphRef.current = graphData;
+    if (!container || graphData.g.order === 0) return;
+    graphRef.current = graphData.g;
 
     if (sigmaRef.current) {
       sigmaRef.current.kill();
       sigmaRef.current = null;
     }
 
-    const sigma = new Sigma(graphData, container, {
-      defaultEdgeColor: "rgba(255,255,255,0.06)",
+    const sigma = new Sigma(graphData.g, container, {
+      defaultEdgeColor: "rgba(255,255,255,0.008)",
+      defaultEdgeType: "line",
       defaultNodeColor: "#888",
       labelColor: { color: "#c0c0c0" },
       labelFont: "monospace",
       labelSize: 11,
       labelRenderedSizeThreshold: 6,
       renderEdgeLabels: false,
+      hideEdgesOnMove: true,
       minCameraRatio: 0.01,
       maxCameraRatio: 10,
       nodeReducer: (node, data) => {
@@ -484,10 +454,12 @@ function AtlasOverview() {
           const src = graph.source(edge);
           const tgt = graph.target(edge);
           if (src === fid || tgt === fid) {
-            res.color = "rgba(255,255,255,0.4)";
-            res.size = 1;
+            const degree = graph.degree(fid);
+            const alpha = degree > 30 ? 0.04 : 0.08;
+            res.color = `rgba(255,255,255,${alpha})`;
+            res.size = 0.5;
           } else {
-            res.color = "rgba(60,60,60,0.03)";
+            res.color = "rgba(60,60,60,0.02)";
           }
         }
 
@@ -495,10 +467,12 @@ function AtlasOverview() {
           const src = graph.source(edge);
           const tgt = graph.target(edge);
           if (src === hovered || tgt === hovered) {
-            res.color = "rgba(255,255,255,0.35)";
-            res.size = 1;
+            const degree = graph.degree(hovered);
+            const alpha = degree > 30 ? 0.03 : 0.06;
+            res.color = `rgba(255,255,255,${alpha})`;
+            res.size = 0.5;
           } else if (!fid) {
-            res.color = "rgba(80,80,80,0.04)";
+            res.color = "rgba(60,60,60,0.02)";
           }
         }
 
@@ -506,16 +480,22 @@ function AtlasOverview() {
       },
     });
 
-    // Hover events
+    // Hover events — debounce refresh via rAF to avoid 60+ refreshes/sec
+    let hoverRafId = 0;
+    const scheduleRefresh = () => {
+      cancelAnimationFrame(hoverRafId);
+      hoverRafId = requestAnimationFrame(() => sigma.refresh());
+    };
+
     sigma.on("enterNode", ({ node }) => {
       hoveredNode.current = node;
-      sigma.refresh();
+      scheduleRefresh();
       container.style.cursor = "pointer";
     });
 
     sigma.on("leaveNode", () => {
       hoveredNode.current = null;
-      sigma.refresh();
+      scheduleRefresh();
       container.style.cursor = "default";
     });
 
@@ -525,28 +505,27 @@ function AtlasOverview() {
         wasDragged.current = false;
         return;
       }
-      const graph = graphRef.current;
-      const attrs = graph?.getNodeAttributes(node);
-      if (!attrs) return;
-
-      if (attrs.isVariable) return;
+      const attrs = graphRef.current?.getNodeAttributes(node);
+      if (!attrs || attrs.isVariable) return;
 
       const nodeName = typeof attrs.name === "string" ? attrs.name : node;
       const kind = typeof attrs.kind === "string" ? attrs.kind : "";
-      const sourceText = typeof attrs.sourceText === "string" ? attrs.sourceText : "";
       const modulePath = typeof attrs.modulePath === "string" ? attrs.modulePath : "";
 
-      if (sourceText) {
-        callbacksRef.current.openNodeView({
-          nodeId: node,
-          name: localName(nodeName),
-          kind,
-          sourceText,
-          modulePath,
-        });
-      }
-
       callbacksRef.current.navigateToNode(node, localName(nodeName));
+
+      // Fetch source_text on demand — overview payload omits it for performance
+      void apiFetch<{ source_text: string }>(`/api/v1/nodes/${node}`)
+        .then((full) => {
+          callbacksRef.current.openNodeView({
+            nodeId: node,
+            name: localName(nodeName),
+            kind,
+            sourceText: full.source_text,
+            modulePath,
+          });
+        })
+        .catch(() => {});
     });
 
     // Double click: expand or trace
@@ -614,12 +593,36 @@ function AtlasOverview() {
 
     sigmaRef.current = sigma;
 
+    // Async ForceAtlas2 worker — runs until settled, then stops
+    let fa2: InstanceType<typeof FA2Layout> | null = null;
+    let stopTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      fa2 = new FA2Layout(graphData.g, {
+        settings: {
+          barnesHutOptimize: true,
+          barnesHutTheta: 0.5,
+          adjustSizes: false,
+          strongGravityMode: true,
+          gravity: 2,
+          scalingRatio: 1,
+          edgeWeightInfluence: 1,
+          slowDown: graphData.g.order > 300 ? 8 : 4,
+        },
+      });
+      fa2.start();
+      stopTimer = setTimeout(() => {
+        fa2?.stop();
+      }, graphData.g.order > 500 ? 3000 : 1500);
+    } catch (e) {
+      console.warn("FA2Layout worker failed to start, graph will use static layout", e);
+    }
+
     // If there's already a focused node, animate to it
     if (focusRef.current.focusedNodeId) {
       requestAnimationFrame(() => {
         const fid = focusRef.current.focusedNodeId;
-        if (fid && graphData.hasNode(fid)) {
-          const nodeAttrs = graphData.getNodeAttributes(fid);
+        if (fid && graphData.g.hasNode(fid)) {
+          const nodeAttrs = graphData.g.getNodeAttributes(fid);
           const nodeDisplayData = sigma.getNodeDisplayData(fid);
           if (nodeDisplayData) {
             const graphCoords = sigma.viewportToFramedGraph(
@@ -635,6 +638,8 @@ function AtlasOverview() {
     }
 
     return () => {
+      if (stopTimer !== null) clearTimeout(stopTimer);
+      fa2?.kill();
       sigma.kill();
       sigmaRef.current = null;
     };
@@ -645,7 +650,23 @@ function AtlasOverview() {
     sigmaRef.current?.refresh();
   }, [focusedNodeId, expandedNodeId, tracedVariableId]);
 
-  if (!allNodes || filteredNodes.length === 0) {
+  if (overviewError) {
+    return (
+      <div
+        className="flex items-center justify-center"
+        style={{
+          position: "absolute",
+          inset: 0,
+          background: "var(--bg-primary)",
+          color: "var(--text-muted)",
+        }}
+      >
+        <span className="text-sm font-mono">Failed to load graph — is the backend running?</span>
+      </div>
+    );
+  }
+
+  if (!overview || overview.nodes.length === 0) {
     return (
       <div
         className="flex items-center justify-center"
@@ -662,15 +683,33 @@ function AtlasOverview() {
   }
 
   return (
-    <div
-      ref={containerRef}
-      style={{
-        position: "absolute",
-        inset: 0,
-        background: "var(--bg-primary)",
-      }}
-    />
+    <div style={{ position: "absolute", inset: 0 }}>
+      <div
+        ref={containerRef}
+        style={{
+          position: "absolute",
+          inset: 0,
+          background: "var(--bg-primary)",
+        }}
+      />
+      {overview && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 8,
+            right: 12,
+            fontSize: 10,
+            fontFamily: "monospace",
+            color: "var(--text-muted)",
+            pointerEvents: "none",
+            userSelect: "none",
+          }}
+        >
+          {overview.nodes.length} nodes · {overview.edges.length} edges
+        </div>
+      )}
+    </div>
   );
 }
 
-export default AtlasOverview;
+export default memo(AtlasOverview);

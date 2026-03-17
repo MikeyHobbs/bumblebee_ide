@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 
@@ -26,4 +27,4 @@ function ClassNode({ data }: NodeProps) {
   );
 }
 
-export default ClassNode;
+export default memo(ClassNode);

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { BaseEdge, getSmoothStepPath } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
 
@@ -31,4 +32,4 @@ function InheritsEdge({
   );
 }
 
-export default InheritsEdge;
+export default memo(InheritsEdge);

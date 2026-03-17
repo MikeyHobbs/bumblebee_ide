@@ -56,6 +56,7 @@ class ImportReport:
 def import_file(
     file_path: str,
     source: str | None = None,
+    abs_path: str | None = None,
     external_name_to_id: dict[str, str] | None = None,
     skip_edges: bool = False,
     parse_cache: dict[str, tuple[str, ParseResult]] | None = None,
@@ -66,8 +67,13 @@ def import_file(
     extracts relationships, variables, and data flow edges.
 
     Args:
-        file_path: Absolute or relative path to the Python file.
-        source: Optional source code. If None, reads from file_path.
+        file_path: Relative path used to derive Python module-qualified node names
+            (e.g. ``"app/services/utils.py"`` → module ``"app.services.utils"``).
+            Should be relative to the project root so that import resolution matches.
+        source: Optional source code. If None, reads from *abs_path* or *file_path*.
+        abs_path: Absolute filesystem path used to read the file and stored as
+            ``module_path`` on the node (for the frontend file opener). If None,
+            falls back to resolving *file_path*.
         external_name_to_id: If provided, local name_to_id is merged into this dict
             after node creation (used for two-pass cross-file edge resolution).
         skip_edges: If True, skip edge creation (nodes only — for pass 1).
@@ -78,15 +84,16 @@ def import_file(
     """
     report = ImportReport(files_processed=1)
 
+    read_path = abs_path or file_path
     if source is None:
         try:
-            source = Path(file_path).read_text(encoding="utf-8")
+            source = Path(read_path).read_text(encoding="utf-8")
         except OSError as exc:
-            report.errors.append(f"Cannot read {file_path}: {exc}")
+            report.errors.append(f"Cannot read {read_path}: {exc}")
             return report
 
-    # Derive module path from file path
-    module_path = _file_to_module_path(file_path)
+    # module_path stored on the node: absolute path so the frontend can open the file
+    module_path = abs_path if abs_path else _file_to_module_path(file_path)
 
     try:
         parse_result = parse_file(source, file_path)
@@ -298,8 +305,16 @@ def import_directory(
     # Pass 1: create all nodes, accumulate global name_to_id
     for idx, file_path in enumerate(sorted(files)):
         try:
+            # Use the package root to derive module naming so import resolution matches
+            # node names even in monorepos with non-package intermediate directories.
+            # E.g. for "monorepo/pkg-dir/mypackage/utils.py" where pkg-dir/ has no
+            # __init__.py, the package root is pkg-dir/ and rel_path is
+            # "mypackage/utils.py" → module "mypackage.utils", matching Python imports.
+            pkg_root = _find_package_root(file_path, dir_path_obj)
+            rel_path = str(file_path.relative_to(pkg_root))
             file_report = import_file(
-                str(file_path),
+                rel_path,
+                abs_path=str(file_path.resolve()),
                 external_name_to_id=global_name_to_id,
                 skip_edges=True,
                 parse_cache=parse_cache,
@@ -431,6 +446,29 @@ def import_incremental(file_path: str) -> ImportReport:
     # import_file already handles incremental logic via _find_existing_node
     # and hash comparison
     return import_file(file_path)
+
+
+def _find_package_root(file_path: Path, search_root: Path) -> Path:
+    """Walk up from file_path.parent to find the Python package root.
+
+    Stops at the first ancestor directory that either does NOT contain an
+    ``__init__.py`` (i.e. is not a Python package) or has reached ``search_root``.
+    This ensures that intermediate non-package directories in a monorepo (e.g.
+    ``bcx-knowledge/`` inside ``bcx-bo/``) are excluded from the module path,
+    so ``bcx-knowledge/bcx_knowledge/nodes.py`` resolves to ``bcx_knowledge.nodes``
+    rather than ``bcx-knowledge.bcx_knowledge.nodes``.
+
+    Args:
+        file_path: Absolute path to the Python source file.
+        search_root: The watch/import directory — never walk above this.
+
+    Returns:
+        Path to the package root directory.
+    """
+    current = file_path.parent
+    while current != search_root and (current / "__init__.py").exists():
+        current = current.parent
+    return current
 
 
 def _clear_graph() -> None:

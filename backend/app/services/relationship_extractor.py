@@ -150,16 +150,92 @@ def _build_import_map(root: tree_sitter.Node, module_name: str) -> dict[str, str
     return import_map
 
 
+def _extract_var_types(
+    func_node: tree_sitter.Node,
+    import_map: dict[str, str],
+) -> dict[str, str]:
+    """Extract variable-to-qualified-type mappings from a function.
+
+    Scans function parameters (type annotations) and body (annotated assignments
+    and constructor calls) to build a local variable type map used for resolving
+    ``obj.method()`` calls cross-file.
+
+    Args:
+        func_node: The function_definition tree-sitter node.
+        import_map: Map of imported names to qualified sources.
+
+    Returns:
+        Dict mapping local variable names to their resolved qualified type names.
+    """
+    var_types: dict[str, str] = {}
+
+    def _resolve_type(type_text: str) -> str:
+        """Resolve a type name through import_map, handling dotted access."""
+        if type_text in import_map:
+            return import_map[type_text]
+        if "." in type_text:
+            parts = type_text.split(".", 1)
+            if parts[0] in import_map:
+                return f"{import_map[parts[0]]}.{parts[1]}"
+        return type_text
+
+    # 1. Parameter type annotations: def f(x: TypeName, y: TypeName = default)
+    params_node = func_node.child_by_field_name("parameters")
+    if params_node:
+        for param in params_node.named_children:
+            if param.type in ("typed_parameter", "typed_default_parameter"):
+                name_child = param.children[0] if param.children else None
+                type_child = param.child_by_field_name("type")
+                if name_child and type_child and name_child.type == "identifier":
+                    var_name = name_child.text.decode("utf-8")
+                    if var_name != "self":
+                        var_types[var_name] = _resolve_type(type_child.text.decode("utf-8"))
+
+    # 2. Body: var = TypeName(...) and var: TypeName [= ...]
+    # tree-sitter Python may wrap assignments in expression_statement or emit them directly
+    body = func_node.child_by_field_name("body")
+    if body:
+        for stmt in body.named_children:
+            # Unwrap expression_statement -> assignment (older tree-sitter Python grammar)
+            actual = stmt
+            if stmt.type == "expression_statement":
+                inner = stmt.named_children[0] if stmt.named_children else None
+                if inner and inner.type == "assignment":
+                    actual = inner
+
+            if actual.type == "assignment":
+                lhs = actual.child_by_field_name("left")
+                rhs = actual.child_by_field_name("right")
+                if lhs and rhs and lhs.type == "identifier":
+                    var_name = lhs.text.decode("utf-8")
+                    if rhs.type == "call":
+                        func_part = rhs.child_by_field_name("function")
+                        if func_part:
+                            var_types[var_name] = _resolve_type(func_part.text.decode("utf-8"))
+            # var: TypeName [= expr]
+            elif actual.type == "annotated_assignment":
+                lhs = actual.named_children[0] if actual.named_children else None
+                type_child = actual.child_by_field_name("annotation")
+                if lhs and type_child and lhs.type == "identifier":
+                    var_types[lhs.text.decode("utf-8")] = _resolve_type(type_child.text.decode("utf-8"))
+
+    return var_types
+
+
 def _resolve_callee(
     callee_text: str,
     enclosing_func: str,
     scope_map: dict[str, ParsedNode],
     import_map: dict[str, str],
     module_name: str,
+    var_type_map: dict[str, str] | None = None,
 ) -> str:
     """Resolve a callee name to a qualified function name.
 
     Resolution order: local scope → class scope → module scope → imported.
+    For ``obj.method()`` calls, also consults *var_type_map* (variable-to-type
+    mapping built from the enclosing function) and *import_map* to resolve
+    cross-file method calls.
 
     Args:
         callee_text: The raw callee name from the call expression.
@@ -167,6 +243,7 @@ def _resolve_callee(
         scope_map: Map of names to ParsedNode instances.
         import_map: Map of imported names to qualified sources.
         module_name: The current module's qualified name.
+        var_type_map: Optional variable-to-qualified-type map for the enclosing function.
 
     Returns:
         Best-effort resolved qualified name.
@@ -183,7 +260,20 @@ def _resolve_callee(
             candidate = f"{class_prefix}.{method_name}"
             if candidate in scope_map:
                 return candidate
-        # Try the last part as the function name
+        else:
+            obj_name = parts[0]
+            method_chain = ".".join(parts[1:])
+
+            # Cross-file resolution via variable type map
+            if var_type_map and obj_name in var_type_map:
+                qualified_type = var_type_map[obj_name]
+                return f"{qualified_type}.{method_chain}"
+
+            # Direct import access: import_map["Calculator"] or import_map["calc_mod"]
+            if obj_name in import_map:
+                return f"{import_map[obj_name]}.{method_chain}"
+
+        # Fall back to last part for local/class/module resolution
         base_name = parts[-1]
 
     # 1. Local scope: nested function in same enclosing function
@@ -238,6 +328,9 @@ def _extract_calls_from_function(
     if body is None:
         return []
 
+    # Build variable→type map for cross-file obj.method() resolution
+    var_type_map = _extract_var_types(func_node, import_map)
+
     calls: list[RelationshipEdge] = []
     call_order = 0
 
@@ -248,7 +341,7 @@ def _extract_calls_from_function(
             func_part = node.child_by_field_name("function")
             if func_part is not None:
                 callee_text = func_part.text.decode("utf-8")
-                resolved = _resolve_callee(callee_text, func_qualified_name, scope_map, import_map, module_name)
+                resolved = _resolve_callee(callee_text, func_qualified_name, scope_map, import_map, module_name, var_type_map)
 
                 calls.append(RelationshipEdge(
                     edge_type="CALLS",

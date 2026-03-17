@@ -25,6 +25,29 @@ class NodeVariable(BaseModel):
 router = APIRouter(prefix="/api/v1", tags=["edges"])
 
 
+@router.get("/graph-overview")
+def get_graph_overview() -> dict:
+    """Lightweight graph overview for the knowledge-graph canvas.
+
+    Returns minimal node fields (id, kind, name, module_path) and all
+    inter-node edges for high-level kinds. No source_text is included,
+    keeping the payload small (~10x smaller than the full node list).
+    """
+    kinds = ["function", "method", "class", "flow_function"]
+    graph = get_graph()
+    node_rows = graph.query(lq.GRAPH_OVERVIEW_NODES, params={"kinds": kinds})
+    edge_rows = graph.query(lq.GRAPH_OVERVIEW_EDGES, params={"kinds": kinds})
+    nodes = [
+        {"id": str(r[0]), "kind": str(r[1]), "name": str(r[2]), "module_path": str(r[3])}
+        for r in node_rows.result_set
+    ]
+    edges = [
+        {"type": str(r[0]), "source": str(r[1]), "target": str(r[2])}
+        for r in edge_rows.result_set
+    ]
+    return {"nodes": nodes, "edges": edges}
+
+
 @router.get("/edges/all", response_model=list[EdgeResponse])
 def list_all_edges(
     limit: int = Query(1000, ge=1, le=5000),
