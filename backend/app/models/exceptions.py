@@ -33,3 +33,30 @@ class ModelAdapterError(BumblebeeError):
 
 class ToolExecutionError(BumblebeeError):
     """Raised when a tool execution fails."""
+
+
+class DuplicateNodeWarning(BumblebeeError):
+    """Warning when a LogicNode with identical AST hash already exists."""
+
+    def __init__(self, existing_id: str, existing_name: str) -> None:
+        self.existing_id = existing_id
+        self.existing_name = existing_name
+        super().__init__(f"Duplicate logic detected: existing node '{existing_name}' ({existing_id}) has identical AST")
+
+
+class SignatureChangedError(BumblebeeError):
+    """Raised when an update changes a function's signature."""
+
+    def __init__(self, node_id: str) -> None:
+        self.node_id = node_id
+        super().__init__(f"Signature changed for node {node_id} — consider creating a new node instead of updating")
+
+
+class EdgeNotFoundError(BumblebeeError):
+    """Raised when an edge cannot be found."""
+
+    def __init__(self, source_id: str, target_id: str, edge_type: str) -> None:
+        self.source_id = source_id
+        self.target_id = target_id
+        self.edge_type = edge_type
+        super().__init__(f"Edge not found: {source_id} -[{edge_type}]-> {target_id}")

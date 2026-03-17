@@ -60,6 +60,44 @@ export function getOrCreateModel(
   return model;
 }
 
+const nodeModels = new Map<string, Monaco.editor.ITextModel>();
+
+export function getOrCreateNodeModel(
+  monaco: typeof Monaco,
+  nodeId: string,
+  sourceText: string,
+  modulePath: string,
+): Monaco.editor.ITextModel {
+  const existing = nodeModels.get(nodeId);
+  if (existing && !existing.isDisposed()) {
+    // Update content if it changed
+    if (existing.getValue() !== sourceText) {
+      existing.setValue(sourceText);
+    }
+    return existing;
+  }
+
+  const uri = monaco.Uri.parse(`bumblebee://node/${nodeId}`);
+  const existingByUri = monaco.editor.getModel(uri);
+  if (existingByUri) {
+    nodeModels.set(nodeId, existingByUri);
+    return existingByUri;
+  }
+
+  const language = getLanguageFromPath(modulePath);
+  const model = monaco.editor.createModel(sourceText, language, uri);
+  nodeModels.set(nodeId, model);
+  return model;
+}
+
+export function disposeNodeModel(nodeId: string): void {
+  const model = nodeModels.get(nodeId);
+  if (model && !model.isDisposed()) {
+    model.dispose();
+  }
+  nodeModels.delete(nodeId);
+}
+
 export function disposeModel(path: string): void {
   const model = models.get(path);
   if (model && !model.isDisposed()) {

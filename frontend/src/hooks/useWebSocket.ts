@@ -55,6 +55,12 @@ export function useWebSocket(options?: UseWebSocketOptions) {
             void queryClient.invalidateQueries({
               queryKey: ["logic-pack"],
             });
+            void queryClient.invalidateQueries({
+              queryKey: ["logic-nodes"],
+            });
+            void queryClient.invalidateQueries({
+              queryKey: ["all-edges"],
+            });
             break;
           case "node:pulse": {
             const nodeId =

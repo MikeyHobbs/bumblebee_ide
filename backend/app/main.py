@@ -21,6 +21,12 @@ from app.routers.websocket import router as websocket_router
 from app.routers.codegen import router as codegen_router
 from app.routers.edit import router as edit_router
 from app.routers.chat import router as chat_router
+from app.routers.logic_nodes import router as logic_nodes_router
+from app.routers.edges import router as edges_router
+from app.routers.variables_v2 import router as variables_v2_router
+from app.routers.import_router import router as import_router
+from app.routers.flows import router as flows_router
+from app.routers.vfs import router as vfs_router
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +35,14 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Manage application lifecycle - initialize and cleanup resources."""
     init_client()
+
+    # Initialize 800-series graph indexes
+    try:
+        from app.services.logic_node_service import ensure_indexes
+        ensure_indexes()
+        logger.info("800-series graph indexes initialized")
+    except Exception:
+        logger.debug("Could not initialize 800-series indexes (FalkorDB may not be running)")
 
     # Start file watcher if watch_path is set
     if settings.watch_path:
@@ -78,6 +92,14 @@ app.include_router(websocket_router)
 app.include_router(codegen_router)
 app.include_router(edit_router)
 app.include_router(chat_router)
+
+# 800-series Code-as-Data routers
+app.include_router(logic_nodes_router)
+app.include_router(edges_router)
+app.include_router(variables_v2_router)
+app.include_router(import_router)
+app.include_router(flows_router)
+app.include_router(vfs_router)
 
 
 @app.get("/health")

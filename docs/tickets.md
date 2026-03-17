@@ -1,430 +1,714 @@
-# Ticket Backlog: Bumblebee IDE Implementation
+# Ticket Backlog: Bumblebee IDE — Code-as-Data Refactor (800-Series)
 
-> **Core principle:** The graph is the canonical representation of code logic. Code is a serialization format. The graph captures enough to reconstruct valid Python, and edits can flow in both directions: Code → Graph and Graph → Code.
-
----
-
-## Epic 1: Repository & Environment
-
-- [ ] **TICKET-101: System Scaffolding**
-    - **Goal:** Establish the mono-repo layout and local dev environment so every subsequent ticket has a runnable baseline.
-    - **Tasks:**
-        - Create the directory structure: `/backend` (FastAPI + Python 3.12), `/frontend` (Vite + React 18 + TypeScript), `/docker`.
-        - Write `docker-compose.yml` with services: `falkordb` (pinned version, tuned `GRAPH.CONFIG` for `THREAD_COUNT`, `CACHE_SIZE`, `MAX_QUEUED_QUERIES`), `backend`, `frontend`.
-        - Add a root `Makefile` with targets: `up`, `down`, `lint`, `test`, `index` (runs the AST parser against a target repo).
-        - Create `pyproject.toml` with Black, isort, Pylint, mypy config per `coding_standards.md`.
-        - Seed a `.env.example` with all required environment variables (`FALKOR_HOST`, `FALKOR_PORT`, `WATCH_PATH`, etc.).
-    - **Acceptance Criteria:**
-        - `make up` boots all three services; FalkorDB is reachable on `localhost:6379`; FastAPI docs load at `/docs`.
-        - `make lint` passes with Pylint >= 9.5 on the (empty) backend package.
-
-- [ ] **TICKET-102: Incremental AST Parser — Structural Nodes** *(amended)*
-    - **Goal:** Parse Python source files into `Module`, `Class`, and `Function` nodes with precise source coordinates.
-    - **Tasks:**
-        - Integrate `tree-sitter-python` via the `tree-sitter` Python bindings.
-        - Extract node types: `module`, `class_definition`, `function_definition` (including nested and async variants).
-        - For each node, capture: `name`, `start_line`, `end_line`, `start_col`, `end_col`, `params` (for functions), `decorators`, `docstring` (first expression statement if string), `source_text` (full source of the node).
-        - Write `MERGE` Cypher templates for upserting `Module`, `Class`, `Function` nodes and `DEFINES` edges.
-        - Implement **Partial Re-indexing**: on file change, delete all nodes where `module_path = <changed_file>` and re-create them. Use a `checksum` property on `Module` to skip unchanged files.
-    - **Acceptance Criteria:**
-        - Given a sample Python repo (~50 files), the parser produces the correct node count matching manual inspection.
-        - Re-indexing a single changed file completes in < 200 ms.
-        - `DEFINES` edges correctly nest Functions inside Classes inside Modules.
-        - Each `Function` node's `source_text` property contains the complete function source (used by code generator in TICKET-207).
-
-- [ ] **TICKET-103: Incremental AST Parser — Relationship Edges** *(amended)*
-    - **Goal:** Extract `CALLS`, `INHERITS`, and `IMPORTS` edges from the AST, with execution ordering.
-    - **Tasks:**
-        - **CALLS:** Walk `call_expression` nodes; resolve the callee name to a `Function` node via scope lookup (local → class → module → imported). Record properties: `call_line`, `seq` (statement position within the enclosing function, top-to-bottom), `call_order` (position among all calls in that function).
-        - **INHERITS:** Extract base classes from `class_definition` argument lists; create edges to the resolved `Class` nodes.
-        - **IMPORTS:** Parse `import_statement` and `import_from_statement`; create `IMPORTS` edges between `Module` nodes. Store `alias` if present.
-    - **Acceptance Criteria:**
-        - A test case with known call chains (A → B → C) produces the correct `CALLS` path in FalkorDB.
-        - Cross-file imports resolve correctly (e.g., `from app.services.auth import verify_token` links to the right `Function` node).
-        - `CALLS` edges within a function are ordered: if `f()` calls `a()` then `b()` then `c()`, the edges have `call_order` 0, 1, 2.
-
-- [ ] **TICKET-104: Statement & Control Flow Nodes** *(new)*
-    - **Goal:** Extract every statement within a function body as a graph node, and represent control flow structures as container nodes, so the graph captures the full execution logic.
-    - **Tasks:**
-        - **Statement nodes:** For each statement in a function body (assignment, expression, return, raise, assert, pass, delete, global, nonlocal), create a `Statement` node with properties:
-            - `source_text`: the raw source of the statement
-            - `seq`: integer position within the parent (function body or control flow branch), 0-indexed
-            - `start_line`, `end_line`, `start_col`, `end_col`
-            - `kind`: `assignment | expression | return | yield | raise | assert | pass | delete | global | nonlocal`
-            - `module_path`: file path (for re-indexing)
-        - **ControlFlow nodes:** For `if/elif/else`, `for`, `while`, `try/except/finally`, `with`, create a `ControlFlow` node with properties:
-            - `kind`: `if | for | while | try | with`
-            - `condition_text`: the condition/iterator expression (e.g., `"user.is_admin"`, `"item in items"`)
-            - `seq`: position among siblings in the parent body
-            - `source_text`: full source of the control flow block
-            - `start_line`, `end_line`
-        - **Branch nodes:** Each branch within a `ControlFlow` (e.g., `if`, `elif`, `else`, `except ValueError`, `finally`) gets a `Branch` node with properties:
-            - `kind`: `if | elif | else | except | finally`
-            - `condition_text`: the branch condition (null for `else`/`finally`)
-            - `seq`: branch order (0 for `if`, 1 for `elif`, etc.)
-        - **Edges:**
-            - `CONTAINS` from `Function` → `Statement`/`ControlFlow` (top-level body)
-            - `CONTAINS` from `ControlFlow` → `Branch`
-            - `CONTAINS` from `Branch` → `Statement`/`ControlFlow` (nested)
-            - `NEXT` from `Statement` → `Statement` (sequential execution within the same parent)
-            - `NEXT` from `ControlFlow` → next sibling `Statement`/`ControlFlow` (flow continues after the block)
-    - **Acceptance Criteria:**
-        - Given a function with an `if/else`, a `for` loop, and 5 plain statements, the graph contains the correct `Statement`, `ControlFlow`, and `Branch` nodes with accurate `CONTAINS` and `NEXT` edges.
-        - Nested control flow (e.g., `if` inside `for`) produces nested `CONTAINS` relationships.
-        - Traversing the `NEXT` chain from the first statement reconstructs the sequential execution order of the function body (at each nesting level).
-        - Re-indexing a file correctly replaces all `Statement`/`ControlFlow`/`Branch` nodes for that file.
+> **Core principle:** Code lives in the graph as atomic LogicNodes. Files are projections. Git stores the serialized graph. The graph is the source of truth, optimized for AI agent interaction.
 
 ---
 
-## Epic 2: Variable Mutation Tracking
+## Phase 0: Foundation (Hash Identity + Schema)
 
-- [ ] **TICKET-201: Variable & Assignment Node Extraction** *(amended)*
-    - **Goal:** Promote variables to first-class graph nodes and record every assignment site with execution ordering.
-    - **Tasks:**
-        - Extend the tree-sitter walker to detect assignment targets: `=`, `:=`, `+=`, `-=`, `for` loop variables, `with` context variables, tuple/list unpacking.
-        - Create `Variable` nodes with properties: `name`, `scope` (function-qualified, e.g., `module.Class.method.var_name`), `origin_line`, `origin_func`, `type_hint` (if annotated).
-        - Create `ASSIGNS` edges from the enclosing `Function` node to the `Variable` node, with properties: `line`, `col`, `seq` (statement position within the function body), `is_rebind` (true if the variable already exists in scope), `control_context` (the `ControlFlow` condition if inside a branch, null otherwise), `branch` (which branch: `"if"`, `"else"`, `"elif 2"`, null for unconditional).
-        - Handle `self.x` attribute assignments: create a `Variable` node scoped to the class, with an `ASSIGNS` edge from the method that sets it.
-        - **Link to Statement nodes:** Create `PART_OF` edge from the `ASSIGNS` edge's source Statement node to the Variable, connecting the variable interaction to its statement in the flow.
-    - **Acceptance Criteria:**
-        - For a test file with 10 assignments (including unpacking and augmented assigns), all 10 `Variable` nodes and `ASSIGNS` edges are present in the graph.
-        - `self.x` set in `__init__` and re-assigned in `update()` produces one `Variable` node with two `ASSIGNS` edges.
-        - All `ASSIGNS` edges have correct `seq` values that match their position in the function body.
-        - Conditional assignments carry `control_context` and `branch` properties (e.g., `control_context: "user.is_admin"`, `branch: "if"`).
+### TICKET-800: Hash-Based Identity System
 
-- [ ] **TICKET-202: Mutation & Read Detection** *(amended)*
-    - **Goal:** Distinguish in-place mutations from reads, record both as edges with execution ordering and control flow context.
-    - **Tasks:**
-        - Detect **mutation patterns**: method calls that mutate (`list.append`, `dict.update`, `set.add`, etc. — use a configurable allowlist), subscript assignment (`x[key] = ...`), attribute assignment on a variable (`x.attr = ...`).
-        - Create `MUTATES` edges from the enclosing `Function` to the `Variable`, with properties: `line`, `seq`, `mutation_kind` (`method_call | subscript_assign | attr_assign`), `control_context`, `branch`.
-        - Detect **read patterns**: any name reference that is not an assignment target or mutation call. Create `READS` edges with properties: `line`, `seq`, `control_context`, `branch`.
-        - Implement a `RETURNS` edge from `Function` → `Variable` when a variable appears in a `return` or `yield` statement, with properties: `line`, `seq`, `control_context`, `branch`.
-    - **Acceptance Criteria:**
-        - `items.append(x)` creates a `MUTATES` edge to `items`, not an `ASSIGNS` edge.
-        - `print(items)` creates a `READS` edge to `items`.
-        - `return items` creates a `RETURNS` edge from the function to `items`.
-        - A mutation inside an `if` block carries `control_context: "len(items) > 0"`, `branch: "if"`.
-        - All edges within a function can be sorted by `seq` to reconstruct execution order.
+**File:** `backend/app/services/hash_identity.py`
 
-- [ ] **TICKET-203: Cross-Function Variable Passing (`PASSES_TO`)** *(amended)*
-    - **Goal:** Track a variable's identity as it crosses function call boundaries via arguments, with ordering.
-    - **Tasks:**
-        - When a `CALLS` edge exists from `func_a` to `func_b`, and argument position `i` in the call maps to parameter `param_i` in `func_b`'s signature, create a `PASSES_TO` edge from `func_a`'s `Variable` node to `func_b`'s `Variable` (parameter) node.
-        - Handle keyword arguments by matching on parameter name.
-        - Handle `*args` / `**kwargs` pass-through: if `func_b` forwards `kwargs` to `func_c`, propagate the `PASSES_TO` chain.
-        - Store edge properties: `call_line`, `seq`, `arg_position`, `arg_keyword`.
-    - **Acceptance Criteria:**
-        - Given `def a(): x = 1; b(x)` and `def b(y): c(y)` and `def c(z): print(z)`, querying the mutation timeline of variable `x` in `a` returns the full chain: `a.x → b.y → c.z`.
-        - Keyword argument passing (`b(value=x)`) correctly resolves to the right parameter node.
+**Goal:** Implement the dual-identity system: stable UUID7 primary keys + SHA-256 AST hash for deduplication.
 
-- [ ] **TICKET-204: Mutation Timeline Query** *(amended)*
-    - **Goal:** Implement the flagship Cypher query that returns a variable's full lifecycle, including statement-level context.
-    - **Tasks:**
-        - Write a parameterized Cypher query that, given a `Variable` node ID (or `name` + `scope`), traverses `ASSIGNS`, `MUTATES`, `READS`, `PASSES_TO`, `RETURNS`, and `FEEDS` edges to collect every function, variable, and statement node that participates in the variable's lifecycle.
-        - Return results as an ordered JSON structure: `{ origin: {...}, mutations: [...], reads: [...], passes: [...], feeds: [...], terminal: {...} }`, sorted by `seq` within each function and by file path across functions.
-        - Include `control_context` and `branch` in the response so the frontend can render conditional branches.
-        - Expose as a FastAPI endpoint: `GET /api/v1/variables/{variable_id}/timeline`.
-    - **Acceptance Criteria:**
-        - For a variable that is assigned in file A, mutated in file B (via `PASSES_TO`), and read in file C, the endpoint returns all three sites with correct file paths, line numbers, and `seq` values.
-        - Conditional mutations include their `control_context` and `branch`.
-        - Query executes in < 100 ms on a graph with 50k+ nodes.
+**Tasks:**
+- Implement `generate_node_id() -> str` using UUID7 (time-sortable).
+- Implement `compute_ast_hash(source_text: str) -> str` using tree-sitter canonicalization + SHA-256.
+- Canonicalization rules: strip comments/docstrings, normalize whitespace, sort decorators alphabetically, serialize to deterministic string.
+- Implement `check_duplicate(ast_hash: str) -> LogicNode | None` that queries FalkorDB for existing nodes with matching hash.
+- Implement `detect_signature_change(old_node: LogicNode, new_source: str) -> bool` that compares parameter names/types and return type.
 
-- [ ] **TICKET-205: Intra-Function Data Flow (`FEEDS`)** *(new)*
-    - **Goal:** Track when a read of one variable feeds into the assignment or mutation of another within the same function, completing the intra-function data flow graph.
-    - **Tasks:**
-        - For each assignment statement (`x = expr`), identify all variables read in `expr`. Create `FEEDS` edges from each read variable's `Variable` node to the assigned variable's `Variable` node.
-        - For each mutation statement (`x.append(y)`), identify all variables read in the arguments. Create `FEEDS` edges from each read variable to the mutated variable.
-        - For each `CALLS` statement (`result = foo(a, b)`), create `FEEDS` edges from argument variables to the result variable (if the return is assigned).
-        - Store edge properties: `line`, `seq`, `expression_text` (the full RHS or argument expression), `via` (`assignment | mutation_arg | call_arg | call_return`).
-    - **Acceptance Criteria:**
-        - Given `x = a + b; y = transform(x); return y`:
-            - `FEEDS` edges exist: `a → x`, `b → x`, `x → y` (via call_return).
-        - Given `items.append(new_item)`:
-            - `FEEDS` edge exists: `new_item → items` (via mutation_arg).
-        - The full data flow within a function can be reconstructed by traversing `FEEDS` edges in `seq` order.
-        - No `FEEDS` edge is created for reads that don't contribute to another variable (e.g., `print(x)` — this is a terminal read, not a feed).
+**Acceptance Criteria:**
+- `compute_ast_hash` produces identical hashes for semantically identical code with different formatting/comments.
+- `compute_ast_hash` produces different hashes for code with different logic.
+- `check_duplicate` returns the existing node when a hash collision is found.
+- `detect_signature_change` correctly identifies when parameters or return type change.
+- UUID7 values are time-sortable and globally unique.
 
 ---
 
-## Epic 3: Code Generation (Graph → Code)
+### TICKET-801: FalkorDB Schema + Cypher Queries
 
-- [ ] **TICKET-206: Code Generator — Graph to Python** *(new)*
-    - **Goal:** Reconstruct valid Python source files from the graph, enabling the round-trip: Code → Graph → [edit] → Code.
-    - **Tasks:**
-        - **Function body reconstruction:** Given a `Function` node, traverse its `CONTAINS` → `Statement`/`ControlFlow` subgraph. Emit `source_text` for each `Statement` in `seq` order, applying indentation based on nesting depth (each `Branch` adds one indent level).
-        - **ControlFlow reconstruction:** For `ControlFlow` nodes, emit the keyword + condition (`if condition:`, `for x in items:`, `while cond:`, `try:`, `with ctx as x:`). Then recurse into each `Branch` in `seq` order, emitting the branch keyword + condition (`elif cond:`, `else:`, `except Error:`, `finally:`) and its body statements.
-        - **Module reconstruction:** Given a `Module` node, emit all import statements (from `IMPORTS` edges), then all class and function definitions (from `DEFINES` edges) in their original `start_line` order.
-        - **Formatting:** Apply Black-compatible formatting (4-space indent, 120-char line length). Preserve the original `source_text` as-is when no graph edits have been made to that node — only regenerate modified subtrees.
-        - **Validation:** After generation, parse the output with tree-sitter to confirm it is syntactically valid Python. If not, return an error with the invalid region highlighted.
-        - Expose as a FastAPI endpoint: `POST /api/v1/codegen/{module_id}` → returns `{ source: string, valid: bool, errors: [...] }`.
-        - Also expose: `POST /api/v1/codegen/function/{function_id}` → returns just that function's reconstructed source.
-    - **Acceptance Criteria:**
-        - A module with 3 classes and 10 functions round-trips through Code → Graph → Code and produces syntactically valid Python.
-        - Modified `Statement` `source_text` values in the graph produce the expected code changes in output.
-        - ControlFlow nesting (if inside for inside try) produces correct indentation.
-        - Unmodified functions preserve their original formatting exactly (no gratuitous reformatting).
+**File:** `backend/app/graph/queries.py` (rewrite)
 
-- [ ] **TICKET-207: Round-Trip Integrity Tests** *(new)*
-    - **Goal:** Prove that the Code → Graph → Code pipeline is lossless for supported Python constructs.
-    - **Tasks:**
-        - Build a test corpus of 20+ Python files covering: simple functions, classes with methods, nested control flow (3+ levels), decorators, type hints, docstrings, comprehensions, lambda expressions, `*args`/`**kwargs`, walrus operator (`:=`), match/case (Python 3.10+), multiline strings, f-strings, tuple unpacking.
-        - For each file: parse → graph → generate → parse again → compare ASTs. The structural AST should be identical.
-        - Identify and document **lossy constructs** — things the graph intentionally does not preserve (e.g., comment placement, blank line count between functions). These are acceptable losses. Semantic changes are not.
-        - Implement a CI job that runs the round-trip suite on every backend change.
-    - **Acceptance Criteria:**
-        - 100% of test files pass the round-trip AST comparison.
-        - Lossy constructs are documented in `docs/codegen-limitations.md` with rationale.
-        - The round-trip test suite runs in < 10 seconds.
+**Goal:** Define the new graph schema (LogicNode, Variable, Flow labels) and implement all core Cypher query templates.
+
+**Tasks:**
+- Define index creation queries per `docs/schema.md` Section 5.
+- Implement MERGE/CREATE templates for LogicNode, Variable, and Flow nodes.
+- Implement edge creation templates for all 14 edge types (CALLS, DEPENDS_ON, IMPLEMENTS, VALIDATES, TRANSFORMS, INHERITS, MEMBER_OF, ASSIGNS, MUTATES, READS, RETURNS, PASSES_TO, FEEDS, STEP_OF).
+- Implement the mutation timeline query (schema.md Section 6.1).
+- Implement the dependency subgraph query (schema.md Section 6.2).
+- Implement the deduplication check query (schema.md Section 6.3).
+- Implement the impact analysis query (schema.md Section 6.4).
+- Implement the flow traversal query (schema.md Section 6.5).
+- Implement node deletion (soft delete: set `status = 'deprecated'`).
+
+**Acceptance Criteria:**
+- All indexes are created on graph initialization.
+- MERGE operations are idempotent — running the same create twice does not duplicate nodes.
+- All query templates are parameterized (no string interpolation of user input).
+- Mutation timeline query returns correct results for a variable that spans 3+ LogicNodes.
 
 ---
 
-## Epic 4: The Visual Logic Layer
+### TICKET-802: Pydantic Models for LogicNode, Variable, Edge, Flow
 
-- [ ] **TICKET-301: Global Force-Directed Canvas** *(amended)*
-    - **Goal:** Render the full repository graph with interactive exploration.
-    - **Tasks:**
-        - Build the React Flow entry point with a custom D3-force layout engine.
-        - Implement node types with distinct visual treatments: `ModuleNode` (folder icon, muted), `ClassNode` (blue outline), `FunctionNode` (green fill), `VariableNode` (orange diamond, smaller).
-        - Implement **Semantic Zoom**: at low zoom show folder clusters; at mid zoom show file nodes; at high zoom expand to function and variable nodes. Use `reactflow`'s `onViewportChange` to drive level-of-detail.
-        - Edge styling: structural edges (`CALLS`, `INHERITS`) as solid lines; data-flow edges (`ASSIGNS`, `MUTATES`, `PASSES_TO`) as dashed lines with directional arrows. Color-code mutation edges in red/orange. Numbered labels on `CALLS` edges showing `call_order`.
-        - Performance: virtualize off-screen nodes; target 60 fps with 2000+ visible nodes.
-    - **Acceptance Criteria:**
-        - A 500-file repo renders in < 2 seconds. Zoom transitions are smooth.
-        - Toggling "Show Variables" layer on/off is instant.
-        - `CALLS` edges display their execution order numbers.
+**File:** `backend/app/models/logic_models.py`
 
-- [ ] **TICKET-302: The "Logic Pack" Visualizer — Function Flow View** *(amended)*
-    - **Goal:** Render a focused subgraph for a specific query result, including a full execution flow view for individual functions.
-    - **Tasks:**
-        - Create a `<LogicPackPanel>` React component that accepts an Atomic Subgraph JSON payload.
-        - Implement a horizontal **timeline layout** for mutation queries: nodes arranged left-to-right in lifecycle order, with edges showing the data flow.
-        - Implement a **radial layout** for call-graph queries: target function at center, callers in the first ring, transitive callers in the second ring.
-        - **Function Flow View (new):** When a single function is selected, render its internal logic as a top-to-bottom flow:
-            - `Statement` nodes as compact code blocks (monospace, showing `source_text`)
-            - `ControlFlow` nodes as branching diamonds with condition text
-            - `Branch` nodes as swim lanes diverging from the diamond
-            - `NEXT` edges as vertical flow arrows
-            - `Variable` nodes as labeled pills on the sides, with `ASSIGNS`/`MUTATES`/`READS` edges connecting to the statements that interact with them
-            - `FEEDS` edges as horizontal arcs connecting variable pills, showing data flow
-            - `CALLS` edges highlighted with numbered badges and arrow to the called function
-            - Color coding: green for assignments, red for mutations, blue for reads, amber for passes
-        - Highlight the "hot path" (the specific execution/mutation path the user queried) with animated edge pulses.
-        - Support click-to-navigate: clicking any node in the Logic Pack fires an event that the Monaco integration consumes.
-    - **Acceptance Criteria:**
-        - A mutation timeline for a variable that passes through 5 functions renders as a clear left-to-right flow with labeled edges.
-        - The Function Flow View for a function with an `if/else` and a `for` loop renders as a clear branching flow diagram.
-        - Variables appear alongside the statements that use them, with color-coded edges.
-        - Clicking a node in the Logic Pack scrolls Monaco to the correct line.
+**Goal:** Define strict Pydantic models matching the schema spec for API serialization and validation.
 
-- [ ] **TICKET-303: Execution Flow Explorer** *(new)*
-    - **Goal:** Enable PyCharm-like "command-click" drill-down through the call graph, showing execution flow at each level.
-    - **Tasks:**
-        - **Click to enter:** Clicking a `FunctionNode` on the global canvas (or in a Logic Pack) opens the Function Flow View (TICKET-302) for that function.
-        - **Drill down:** Within the Function Flow View, clicking a `CALLS` edge or a called function's name opens the Function Flow View for the *called* function. A breadcrumb trail builds: `main → process_data → validate_input`.
-        - **Breadcrumb navigation:** Clicking any breadcrumb item returns to that function's flow view. Back button steps up one level.
-        - **Call context sidebar:** When drilled into a called function, the sidebar shows: which arguments were passed (from `PASSES_TO` edges), which variables the caller's result is assigned to, and the `call_order` position in the parent.
-        - **Multi-hop variable tracking:** When a variable is selected in a parent function and you drill into a called function, the variable's identity is highlighted through the `PASSES_TO` chain — the parameter it maps to is pre-highlighted in the child's flow.
-        - **Keyboard shortcuts:** `Ctrl+Click` / `Cmd+Click` on a call to drill in. `Escape` or `Backspace` to drill out.
-    - **Acceptance Criteria:**
-        - Starting from `main()`, drilling through 4 levels of calls builds a 4-item breadcrumb. Each level shows the correct Function Flow View.
-        - Variable identity is preserved across drill-downs: selecting `x` in `main()`, drilling into `process(x)`, highlights parameter `data` in `process()` if `PASSES_TO` connects them.
-        - `Escape` returns to the parent function's flow view with the call site highlighted.
+**Tasks:**
+- `LogicNodeCreate` — input model for creating a LogicNode (name, kind, source_text, semantic_intent, tags, derived_from).
+- `LogicNodeResponse` — output model with all properties including computed fields (id, ast_hash, created_at, updated_at).
+- `LogicNodeUpdate` — input model for updating (new_source_text, semantic_intent, tags).
+- `VariableResponse` — output model for Variable nodes.
+- `EdgeCreate` — input model (source_id, target_id, edge_type, properties).
+- `EdgeResponse` — output model.
+- `FlowCreate` — input model (name, description, node_ids, entry_point, exit_points, sub_flow_ids, parent_flow_id).
+- `FlowResponse` — output model (includes sub_flow_ids, parent_flow_id, promoted_node_id).
+- `FlowHierarchy` — recursive response model for flow hierarchy queries.
+- `MutationTimeline` — response model for the timeline query (origin, mutations, reads, passes, feeds, terminal).
+- `LogicPack` — response model (nodes, edges, snippets).
+- `ParamSpec` — embedded model for function parameters.
+- `GapReport` — response model for gap analysis (dead_ends, orphans, missing_error_handling, circular_deps).
+- All models use `kind` enums: `LogicNodeKind` (`function`, `method`, `class`, `constant`, `type_alias`, `flow_function`), `EdgeType`, `MutationKind`, `ParamKind`.
+
+**Acceptance Criteria:**
+- All models validate correctly with example data from `docs/schema.md`.
+- Enum validation rejects invalid `kind` and `edge_type` values.
+- `LogicNodeCreate` auto-generates `id` and `ast_hash` via validators.
+- All datetime fields use ISO 8601 format.
+- Models are JSON-serializable for API responses and Git serialization.
 
 ---
 
-## Epic 5: The Integrated Workspace
+## Phase 1: Core Graph Operations
 
-- [ ] **TICKET-401: Monaco Context Manager**
-    - **Goal:** Integrate a full-featured code editor that stays in sync with the graph.
-    - **Tasks:**
-        - Integrate `@monaco-editor/react` with TypeScript language support.
-        - Implement a `ModelManager` service that loads all repo files as Monaco `ITextModel` instances, keyed by file path. Lazy-load file contents on first open.
-        - **Graph → Editor navigation:** When a graph node is clicked, call `editor.revealLineInCenter(node.start_line)` and set the cursor. If the node is in a different file, switch the active model first.
-        - **Variable node navigation:** Clicking a `Variable` node or a mutation edge navigates to the specific `line` property of that edge/node.
-        - Implement a tab bar showing open files, with a "pinned" indicator for files referenced by the current Logic Pack.
-    - **Acceptance Criteria:**
-        - Clicking a `FunctionNode` in the graph opens the correct file and scrolls to the function. Latency < 100 ms.
-        - Clicking a `MUTATES` edge on variable `x` in `process_data()` navigates to the exact line of the mutation.
+### TICKET-810: Logic Node CRUD Service
 
-- [ ] **TICKET-402: Bidirectional Highlighting & Mutation Gutter** *(amended)*
-    - **Goal:** Make the editor and graph reflect each other's state in real time, at statement-level granularity.
-    - **Tasks:**
-        - **Cursor → Graph:** Use Monaco's `onDidChangeCursorPosition` to determine which `Function` and `Statement` the cursor is in (binary search on `start_line`/`end_line` ranges). Dispatch a `highlightNode` event to React Flow, highlighting both the function and the specific statement in the Function Flow View.
-        - **Mutation Gutter Icons:** Query all `ASSIGNS`, `MUTATES`, `READS`, and `FEEDS` edges for the active file. Render gutter decorations: green for assignment, red for mutation, blue for read, amber for feeds. Clicking a gutter icon opens the mutation timeline for that variable in the Logic Pack panel.
-        - **Delta Decorations:** Highlight the line ranges of all functions referenced in the current Logic Pack with a subtle background color.
-        - **Statement highlight:** When a `Statement` node is selected in the Function Flow View, highlight the corresponding line range in Monaco with a brighter background.
-    - **Acceptance Criteria:**
-        - Moving the cursor between functions causes the corresponding graph node to glow within 50 ms.
-        - Moving the cursor between statements causes the corresponding `Statement` node in the Function Flow View to highlight.
-        - Gutter icons appear for all variable interactions in the active file. Clicking a mutation icon opens the correct timeline.
+**File:** `backend/app/services/logic_node_service.py`
 
-- [ ] **TICKET-403: Graph-Based Code Editing** *(new)*
-    - **Goal:** Allow developers to edit code by manipulating the graph, with changes written back to source files.
-    - **Tasks:**
-        - **Statement editing:** Double-click a `Statement` node in the Function Flow View to edit its `source_text` inline. On save, update the graph node and trigger the code generator (TICKET-206) to rewrite the containing function.
-        - **Statement reordering:** Drag-and-drop `Statement` nodes to reorder them within a function body or branch. Updates `seq` values and `NEXT` edges. Triggers code regeneration.
-        - **Statement insertion:** A "+" button between statements in the flow view opens an inline editor to add a new statement. Creates a new `Statement` node with the correct `seq` and adjusts surrounding `seq` values.
-        - **Statement deletion:** Right-click → Delete on a `Statement` node removes it from the graph and adjusts `seq`/`NEXT` edges. Triggers code regeneration.
-        - **ControlFlow manipulation:** Add new `if/for/while` blocks from a context menu. Move statements into/out of branches by dragging.
-        - **Function extraction:** Select multiple `Statement` nodes → "Extract Function" creates a new `Function` node, moves the statements into it, replaces the original statements with a `CALLS` edge, and generates the function signature from the `FEEDS`/`READS` edges (variables read become parameters, variables assigned become return values).
-        - **Write-back pipeline:** After any graph edit: (1) update graph nodes/edges, (2) run code generator for the affected function, (3) validate with tree-sitter, (4) if valid, write to disk, (5) emit `graph:updated` WebSocket event. If invalid, show error and revert graph edit.
-        - **Monaco sync:** After write-back, update the Monaco model for the affected file. The editor reflects the change immediately.
-    - **Acceptance Criteria:**
-        - Editing a statement's `source_text` in the flow view produces the correct change in the source file.
-        - Dragging a statement from position 3 to position 1 correctly reorders the code in the file.
-        - Inserting a new statement between two existing ones produces valid Python with correct indentation.
-        - "Extract Function" correctly identifies parameters and return values from the data flow graph.
-        - Invalid edits (syntax errors) are caught before write-back and display a clear error.
+**Goal:** Implement create, read, update, deprecate operations for LogicNodes with automatic Variable extraction.
+
+**Tasks:**
+- `create_node(data: LogicNodeCreate) -> LogicNodeResponse`:
+  - Generate UUID7, compute AST hash, check for duplicates (warn if found).
+  - Write LogicNode to FalkorDB.
+  - Auto-run variable extraction: parse source_text with tree-sitter, extract Variable nodes + ASSIGNS/MUTATES/READS/RETURNS edges (reuse `variable_extractor.py` logic).
+  - Auto-run dataflow extraction: extract PASSES_TO + FEEDS edges (reuse `dataflow_extractor.py` logic).
+  - If `kind == "method"` and `class_id` is provided, create MEMBER_OF edge.
+- `get_node(node_id: str) -> LogicNodeResponse`: Fetch by UUID with all properties.
+- `find_nodes(query: str, kind: str | None, limit: int) -> list[LogicNodeResponse]`: Search by name, tag, or semantic intent.
+- `update_node(node_id: str, data: LogicNodeUpdate) -> LogicNodeResponse`:
+  - Recompute AST hash. If signature changed, prompt/warn.
+  - Update node in-place (same UUID). Edges remain stable.
+  - Re-extract all Variable nodes and data-flow edges for this LogicNode (delete old, create new).
+- `deprecate_node(node_id: str, replacement_id: str | None) -> None`:
+  - Set `status = 'deprecated'`. Optionally link to replacement node.
+  - Do NOT delete edges — they serve as historical record.
+
+**Acceptance Criteria:**
+- Creating a LogicNode with a function that assigns 3 variables produces 3 Variable nodes and 3 ASSIGNS edges automatically.
+- Updating a LogicNode's source_text re-extracts variables — old variable nodes for this LogicNode are replaced.
+- Duplicate AST hash triggers a warning (returned in response metadata), not an error.
+- Deprecated nodes are excluded from default queries but remain in the graph.
 
 ---
 
-## Epic 6: Atomic GraphRAG & Agent Logic
+### TICKET-811: Edge Service
 
-- [ ] **TICKET-501: Atomic Retrieval Query Templates**
-    - **Goal:** Build a library of parameterized Cypher queries that power Logic Packs.
-    - **Tasks:**
-        - **Call-chain query:** Given a function ID and hop depth, return the function, its callers, its callees, and all connecting edges (ordered by `call_order`).
-        - **Mutation timeline query:** (From TICKET-204) Package the result as a Logic Pack JSON with embedded source snippets for each node.
-        - **Impact query:** Given a function ID, return all variables it `MUTATES` and every downstream `READS` consumer of those variables — answering *"if I change this function, what breaks?"*
-        - **Class hierarchy query:** Given a class, return its full inheritance tree and all overridden methods.
-        - **Function flow query (new):** Given a function ID, return its full `Statement`/`ControlFlow`/`Branch` subgraph with all `Variable` interactions — the complete data needed for the Function Flow View.
-        - Each query returns a standardized `LogicPack` JSON: `{ nodes: [...], edges: [...], snippets: { node_id: "source_code" } }`.
-    - **Acceptance Criteria:**
-        - All five query types return valid `LogicPack` JSON.
-        - The impact query correctly identifies a downstream reader 3 hops away via `PASSES_TO` chains.
-        - The function flow query returns statements in `seq` order with correct nesting.
+**File:** `backend/app/services/edge_service.py`
 
-- [ ] **TICKET-502: Natural Language to Cypher Agent**
-    - **Goal:** Let developers ask questions in plain English and get graph-powered answers.
-    - **Tasks:**
-        - Build a prompt template that includes the graph schema (node labels, edge types, key properties) and 5-10 few-shot Cypher examples.
-        - Target questions: *"Where is the user object modified?"*, *"What functions call `save_order` and what do they pass to it?"*, *"Show me every mutation of `self.config` across the codebase."*, *"What's the execution flow of `process_order`?"*
-        - Route the generated Cypher through the FastAPI query endpoint; feed the resulting Logic Pack into the visualizer.
-        - Implement a confidence check: if the LLM's Cypher query returns zero results, retry with a relaxed query (e.g., fuzzy name match).
-    - **Acceptance Criteria:**
-        - The question *"What happens to the `request` variable in `handle_upload`?"* produces a Cypher query that returns the correct mutation timeline.
-        - 8 out of 10 test questions produce valid, non-empty Cypher results on a sample repo.
+**Goal:** Implement CRUD operations for edges between nodes.
+
+**Tasks:**
+- `add_edge(data: EdgeCreate) -> EdgeResponse`: Validate source and target exist, create typed edge with properties.
+- `remove_edge(source_id: str, target_id: str, edge_type: str) -> None`: Delete edge.
+- `get_edges(node_id: str, direction: str, edge_types: list[str] | None) -> list[EdgeResponse]`:
+  - `direction` is `outgoing`, `incoming`, or `both`.
+  - Optional filter by edge type.
+- `get_dependencies(node_id: str, depth: int, edge_types: list[str] | None) -> list[EdgeResponse]`: Multi-hop outgoing traversal.
+- `get_dependents(node_id: str, depth: int) -> list[EdgeResponse]`: Multi-hop incoming traversal.
+
+**Acceptance Criteria:**
+- Adding an edge with an invalid source/target UUID returns a 404 error.
+- Adding a duplicate edge (same source, target, type) is idempotent.
+- Multi-hop traversal with `depth=3` returns edges up to 3 hops away.
+- Edge type filtering works correctly (e.g., only CALLS edges).
 
 ---
 
-## Epic 7: Live Sync & Agent Ghosting
+### TICKET-812: Variable Timeline Service
 
-- [ ] **TICKET-601: File System Watcher** *(amended)*
-    - **Goal:** Keep the graph in sync with the codebase in real time, including statement-level nodes.
-    - **Tasks:**
-        - Implement a Python `watchdog` observer that watches `WATCH_PATH` for `.py` file changes (create, modify, delete).
-        - On change: compute the file's new checksum. If it differs from the `Module` node's stored checksum, trigger the full parser pipeline: TICKET-102/103 (structural), TICKET-104 (statements/control flow), TICKET-201/202/203 (variables), TICKET-205 (FEEDS).
-        - Emit a WebSocket event (`graph:updated { affected_modules: [...] }`) to the frontend.
-        - Frontend receives the event and re-fetches visible nodes from the graph API, animating a "pulse" ripple on updated nodes. If a Function Flow View is open for an affected function, refresh it.
-        - Debounce rapid saves (e.g., 300 ms) to avoid redundant re-indexes.
-        - **External edit detection:** If a file is modified externally (not via TICKET-403's write-back), detect the conflict and update the graph from the file (file wins over graph for external edits).
-    - **Acceptance Criteria:**
-        - Saving a file in any editor triggers a visible graph pulse within 1 second.
-        - Adding a new mutation to a variable (e.g., `items.append(new)`) causes a new `MUTATES` edge to appear in the graph without a full re-index.
-        - An open Function Flow View updates when the underlying file changes.
+**File:** `backend/app/services/variable_timeline_service.py`
 
-- [ ] **TICKET-602: Agent "Ghost" Preview** *(amended)*
-    - **Goal:** Visualize AI-proposed code changes on the graph *before* they are committed, using the Function Flow View.
-    - **Tasks:**
-        - Accept a proposed diff (unified diff format) from an agent. Parse it into a set of affected files and line ranges.
-        - Run the full parser pipeline on the *proposed* file contents (apply the diff in memory). Produce a "shadow" set of nodes and edges.
-        - Diff the shadow graph against the current graph. Categorize changes: `added_nodes`, `removed_nodes`, `added_edges`, `removed_edges`, `modified_properties`.
-        - **Global canvas ghosts:** Render ghost nodes as dashed outlines and ghost edges as dashed lines. Use red for removals, green for additions.
-        - **Function Flow View ghosts:** In the Function Flow View, show added `Statement` nodes with a green left border, removed statements with a red strikethrough, modified statements with a yellow highlight and an inline diff.
-        - **Mutation impact:** If the proposed diff introduces a new `MUTATES` edge on a variable, highlight all downstream `READS` consumers with a warning icon — these are the functions the agent's change may affect.
-        - Show a side-by-side Monaco diff view (`monaco.editor.createDiffEditor`) for the affected file.
-        - Accepting the ghost applies the diff to disk and triggers the watcher (TICKET-601) for real indexing.
-    - **Acceptance Criteria:**
-        - A proposed change that adds a new function call renders a green dashed `CALLS` edge and a new ghost `FunctionNode`.
-        - A proposed change that adds `items.sort()` shows a new `MUTATES` edge to `items` and flags all downstream readers with a warning.
-        - The Function Flow View shows added/removed/modified statements with clear visual differentiation.
-        - Accepting the ghost applies the diff to disk and triggers the watcher (TICKET-601) for real indexing.
+**Goal:** Implement the mutation timeline query and variable tracing.
+
+**Tasks:**
+- `get_variable_timeline(variable_id: str) -> MutationTimeline`:
+  - Execute the mutation timeline Cypher query (schema.md Section 6.1).
+  - Return structured response: origin LogicNode + ASSIGNS edge, list of MUTATES edges with their LogicNodes, list of READS edges, PASSES_TO chains, FEEDS edges, terminal node (last consumer).
+- `trace_variable(name: str, scope: str | None) -> list[MutationTimeline]`:
+  - Find Variable nodes matching name (optionally scoped).
+  - Return mutation timeline for each match.
+- `get_impact(node_id: str) -> list[dict]`:
+  - For a LogicNode, find all variables it MUTATES, then find all LogicNodes that READ those variables.
+  - Return: `[{variable: str, affected_consumers: [str]}]`.
+
+**Acceptance Criteria:**
+- Timeline for a variable that passes through 5 functions via PASSES_TO returns the complete chain.
+- `trace_variable("config")` returns timelines for all variables named `config` across all scopes.
+- Impact analysis correctly identifies downstream readers 3+ hops away via PASSES_TO chains.
+- All queries execute in < 100ms on a graph with 50k+ nodes.
 
 ---
 
-## Epic 8: Layout & Terminal Navigation
+### TICKET-813: REST API Endpoints
 
-- [ ] **TICKET-701: Panel Layout — Terminal Bottom, Graph+Editor Top**
-    - **Goal:** Rearrange the workspace layout so the terminal spans the full width along the bottom, with the graph canvas and code editor splitting the top half side-by-side.
-    - **Tasks:**
-        - Refactor `Layout.tsx` from a 3-column layout to a 2-row layout: top row (graph + editor side-by-side with horizontal resize handle), bottom row (terminal spanning full width with vertical resize handle).
-        - Update `layoutStore.ts` to track `topRowHeight` / `terminalHeight` instead of three column widths. Keep horizontal resize between graph and editor panels.
-        - Add a vertical `ResizeHandle` between the top and bottom rows for adjusting terminal height.
-        - Ensure the terminal can be collapsed/expanded (double-click divider or keyboard shortcut).
-        - Maintain existing panel collapse behavior for graph and editor within the top row.
-    - **Acceptance Criteria:**
-        - Terminal spans the full width at the bottom of the viewport.
-        - Graph and editor sit side-by-side in the top portion.
-        - Both the vertical (top/bottom) and horizontal (graph/editor) dividers are draggable.
-        - Collapsing the terminal gives full height to the top row.
+**File:** `backend/app/routers/logic_nodes.py`, `backend/app/routers/edges.py`, `backend/app/routers/variables.py`
 
-- [ ] **TICKET-702: Terminal Graph Navigation — CLI Commands**
-    - **Goal:** Allow users to navigate the graph structure using terminal commands, with the graph canvas syncing to reflect the current position.
-    - **Tasks:**
-        - **Three input modes in one terminal:**
-            1. **CLI commands** (default) — filesystem-style navigation of the graph
-            2. **Cypher queries** (auto-detected when input starts with `MATCH`, `RETURN`, etc.) — runs directly against the graph DB
-            3. **Natural language** (prefix with `?` or `ask`) — routes to the LLM chat pipeline, e.g. `? where is the user object modified?` or `ask what functions call save_order?`
-        - **CLI navigation commands:**
-            - `ls` — list children of the current node (modules at root, classes/functions in a file, methods in a class, statements in a function)
-            - `cd <name>` — drill into a node (file, class, function). Supports `cd ..` to go up one level, `cd /` to return to root (modules view)
-            - `pwd` — print the current breadcrumb path (e.g., `/ > app/services/auth.py > AuthService > verify_token`)
-            - `cat <name>` — show the source text of a node (function body, class definition, statement)
-            - `tree` — show a tree view of children with their types (like `tree` in a filesystem)
-            - `find <pattern>` — search for nodes by name pattern within the current scope
-            - `info <name>` — show node properties (type, line numbers, edges)
-        - **Graph sync:** Each `cd` command triggers the corresponding store action (`drillIntoFile`, `drillIntoClass`, `drillIntoFunction`, `navigateTo`), so the graph canvas and breadcrumb update to match the terminal's position.
-        - **Reverse sync:** When the user clicks a node in the graph to drill in, update the terminal's current context so subsequent `ls`/`cd` commands operate from the new position.
-        - **Tab completion:** Pressing Tab in the terminal input auto-completes node names from the current scope (query the graph for children of the current node).
-        - **Formatting:** `ls` output uses color coding by node type (same colors as the graph: green for functions, blue for classes, etc.). Show line numbers and edge counts.
-    - **Acceptance Criteria:**
-        - `cd app/services/auth.py` from root drills into the file and the graph canvas shows the file-members view.
-        - `ls` inside a class shows its methods. `cd verify_token` enters the function and the graph shows function-detail view.
-        - `cd ..` from function-detail returns to the parent (class or file) and the graph updates accordingly.
-        - Clicking a node in the graph updates the terminal context — a subsequent `ls` lists that node's children.
-        - `? what calls verify_token` sends to the LLM and displays the response with tool call results.
-        - `MATCH (f:Function) RETURN f.name LIMIT 5` is auto-detected as Cypher and runs directly.
-        - `tree` produces a readable, indented, color-coded hierarchy.
-        - Tab completion works for node names in the current scope.
+**Goal:** Expose all Phase 0-1 services as REST endpoints.
+
+**Tasks:**
+- **LogicNode endpoints:**
+  - `POST /api/v1/nodes` — Create a LogicNode
+  - `GET /api/v1/nodes/{node_id}` — Get a LogicNode by UUID
+  - `GET /api/v1/nodes` — Search/list nodes (`?query=`, `?kind=`, `?limit=`)
+  - `PATCH /api/v1/nodes/{node_id}` — Update a LogicNode
+  - `DELETE /api/v1/nodes/{node_id}` — Deprecate a LogicNode (`?replacement_id=`)
+  - `GET /api/v1/nodes/{node_id}/logic-pack` — Get Logic Pack subgraph (`?hops=`, `?edge_types=`)
+- **Edge endpoints:**
+  - `POST /api/v1/edges` — Add an edge
+  - `DELETE /api/v1/edges` — Remove an edge (`?source=`, `?target=`, `?type=`)
+  - `GET /api/v1/nodes/{node_id}/edges` — Get edges for a node (`?direction=`, `?types=`)
+  - `GET /api/v1/nodes/{node_id}/dependencies` — Get dependency subgraph (`?depth=`, `?edge_types=`)
+  - `GET /api/v1/nodes/{node_id}/dependents` — Get dependent subgraph (`?depth=`)
+- **Variable endpoints:**
+  - `GET /api/v1/variables/{variable_id}/timeline` — Mutation timeline
+  - `GET /api/v1/variables/search` — Search variables (`?name=`, `?scope=`)
+  - `GET /api/v1/variables/trace` — Trace a variable (`?name=`, `?scope=`)
+  - `GET /api/v1/nodes/{node_id}/impact` — Impact analysis
+- **Utility endpoints:**
+  - `POST /api/v1/query` — Raw Cypher query (`{ "cypher": "...", "params": {} }`)
+  - `POST /api/v1/nodes/{node_id}/vfs` — Project VFS for a node (`?format=python`)
+
+**Acceptance Criteria:**
+- All endpoints return proper HTTP status codes (201 for create, 200 for get/update, 204 for delete, 404 for not found, 422 for validation errors).
+- All endpoints are documented with OpenAPI schemas (auto-generated from Pydantic models).
+- Pagination works on list endpoints (`?offset=`, `?limit=`).
+- Raw Cypher endpoint validates query syntax before execution.
+
+---
+
+## Phase 2: Serialization (Graph-to-Git)
+
+### TICKET-820: Graph-to-Git Serializer
+
+**File:** `backend/app/services/serializer.py`
+
+**Goal:** Serialize the full FalkorDB graph state to the `.bumblebee/` directory structure.
+
+**Tasks:**
+- Implement `serialize_graph(output_dir: str) -> SerializationReport`:
+  - Write `meta.json` with counts and timestamp.
+  - Write each LogicNode as `nodes/<uuid>.json`.
+  - Write Variable nodes grouped by scope as `variables/var_<scope_hash>.json`.
+  - Write all edges as `edges/manifest.json`.
+  - Write each Flow as `flows/flow_<name>.json`.
+- Implement incremental serialization: only write files for nodes/edges that changed since last serialization (track via `updated_at` comparison).
+- JSON formatting: 2-space indent, sorted keys, for clean Git diffs.
+
+**Acceptance Criteria:**
+- Full serialization of a 500-node graph completes in < 2 seconds.
+- Incremental serialization of 5 changed nodes completes in < 200ms.
+- Output matches the format in `docs/schema.md` Section 4.
+- Running serialization twice without changes produces zero Git diff.
+
+---
+
+### TICKET-821: Git-to-Graph Deserializer
+
+**File:** `backend/app/services/deserializer.py`
+
+**Goal:** Load a `.bumblebee/` directory into FalkorDB on startup.
+
+**Tasks:**
+- Implement `deserialize_graph(input_dir: str) -> DeserializationReport`:
+  - Read `meta.json` for validation.
+  - Load all `nodes/*.json` files, create LogicNode nodes in FalkorDB.
+  - Load all `variables/var_*.json` files, create Variable nodes.
+  - Load `edges/manifest.json` (or per-type files if sharded), create all edges.
+  - Load all `flows/flow_*.json` files, create Flow nodes + STEP_OF edges.
+- Implement conflict detection: if FalkorDB already has data, compare and report differences.
+- Implement merge strategy: option to replace (clear graph first) or merge (skip existing, add new).
+
+**Acceptance Criteria:**
+- Deserializing a serialized graph produces an identical graph (round-trip test).
+- Loading a 500-node graph from JSON files completes in < 5 seconds.
+- Conflict detection correctly identifies nodes that exist in both graph and files with different content.
+
+---
+
+### TICKET-822: Semantic Diff Engine
+
+**File:** `backend/app/services/semantic_diff.py`
+
+**Goal:** Compute meaningful diffs between two graph states.
+
+**Tasks:**
+- Implement `compute_diff(old_dir: str, new_dir: str) -> SemanticDiff`:
+  - Compare node sets: added, removed (deprecated), modified (same UUID, different hash).
+  - Compare edge sets: added, removed.
+  - Compare variable sets: added, removed, modified.
+  - For modified nodes: include old and new `source_text`, `signature`, `semantic_intent`.
+- Implement `compute_diff_from_graph(serialized_dir: str) -> SemanticDiff`:
+  - Compare the serialized files against the live FalkorDB state.
+- Return structured report suitable for frontend visualization.
+
+**Acceptance Criteria:**
+- Renaming a function's body (same UUID) shows as "modified" with old/new source.
+- Adding a new LogicNode shows as "added" with all its auto-extracted variables and edges.
+- Deprecating a node shows as "removed" with a list of affected edges.
+- Diff computation completes in < 1 second for 1000-node graphs.
+
+---
+
+### TICKET-823: File Watcher for `.bumblebee/` Directory
+
+**File:** `backend/app/services/bumblebee_watcher.py`
+
+**Goal:** Watch the `.bumblebee/` directory for external changes (e.g., `git pull`) and sync to FalkorDB.
+
+**Tasks:**
+- Implement a watchdog observer on `.bumblebee/nodes/`, `.bumblebee/variables/`, `.bumblebee/edges/`, `.bumblebee/flows/`.
+- On file change: deserialize the changed file(s) and update FalkorDB.
+- Debounce rapid changes (300ms) for `git checkout` operations that modify many files.
+- Emit `graph:updated` WebSocket event after sync.
+- Ignore changes to `.bumblebee/vfs/` (gitignored, output only).
+
+**Acceptance Criteria:**
+- After `git pull` that modifies `.bumblebee/nodes/xyz.json`, the corresponding LogicNode in FalkorDB is updated within 1 second.
+- Rapid file changes (e.g., `git checkout` modifying 50 files) are batched into a single sync operation.
+- VFS directory changes do not trigger sync.
+
+---
+
+## Phase 3: Import Pipeline
+
+### TICKET-830: Python-to-LogicNode Converter
+
+**File:** `backend/app/services/import_pipeline.py`
+
+**Goal:** Convert existing Python source files into LogicNodes in the graph.
+
+**Tasks:**
+- Implement `import_file(file_path: str) -> ImportReport`:
+  - Parse with tree-sitter (reuse existing `ast_parser.py`).
+  - For each function/method: create a LogicNode with `kind=function/method`, extract source_text, signature, params, return_type, decorators, docstring.
+  - For each class: create a LogicNode with `kind=class`, create MEMBER_OF edges for methods, INHERITS edges for base classes.
+  - For each top-level constant/type alias: create LogicNode with appropriate `kind`.
+  - Run relationship extraction (reuse `relationship_extractor.py`): create CALLS, DEPENDS_ON edges.
+  - Auto-extract variables and data-flow edges (via logic_node_service create pipeline).
+- Implement `import_directory(dir_path: str, patterns: list[str]) -> ImportReport`:
+  - Recursively import all matching files.
+  - Track progress, emit WebSocket events.
+- Implement `import_incremental(file_path: str) -> ImportReport`:
+  - Compare file checksum to existing LogicNodes' metadata.
+  - Only re-import changed functions (detect by comparing AST hashes).
+
+**Acceptance Criteria:**
+- Importing the Bumblebee backend itself produces LogicNodes for all functions/methods/classes.
+- All CALLS edges between functions are correctly created.
+- Variable extraction runs on each imported LogicNode.
+- Incremental import of a file with 1 changed function only updates that function's LogicNode.
+- Import of 100 files completes in < 30 seconds.
+
+---
+
+### TICKET-831: Import REST Endpoint
+
+**File:** `backend/app/routers/import_router.py`
+
+**Goal:** Expose the import pipeline via REST API.
+
+**Tasks:**
+- `POST /api/v1/import/file` — Import a single file (`{ "path": "..." }`).
+- `POST /api/v1/import/directory` — Import a directory (`{ "path": "...", "patterns": ["*.py"] }`).
+- `POST /api/v1/import/incremental` — Incremental re-import (`{ "path": "..." }`).
+- All endpoints stream progress via WebSocket `import:progress` events.
+- Return `ImportReport` with counts: nodes_created, nodes_updated, edges_created, variables_created, errors.
+
+**Acceptance Criteria:**
+- Importing a directory returns accurate counts.
+- Progress events are emitted for each file processed.
+- Errors in individual files don't halt the full import (logged and reported).
+
+---
+
+## Phase 4: VFS Projection Engine
+
+### TICKET-840: VFS Engine (Graph-to-Files, Bidirectional)
+
+**File:** `backend/app/services/vfs_engine.py`
+
+**Goal:** Project the graph into human-readable Python files in `.bumblebee/vfs/` (git-tracked) with bidirectional sync.
+
+**Tasks:**
+- Implement `project_module(module_path: str) -> str`:
+  - Query all LogicNodes with matching `module_path`.
+  - Order by original position (or alphabetically for new nodes).
+  - Generate import statements from DEPENDS_ON edges.
+  - Generate class definitions with MEMBER_OF methods.
+  - Generate standalone functions.
+  - Reuse `code_generator.py` logic for source reconstruction.
+- Implement `project_all(output_dir: str) -> ProjectionReport`:
+  - Project all modules to `.bumblebee/vfs/` directory.
+  - Mirror the module_path structure as directories.
+- Implement `project_node(node_id: str) -> str`:
+  - Generate source text for a single LogicNode.
+- Implement `sync_vfs_to_graph(vfs_path: str) -> SyncReport` (reverse pipeline):
+  - Parse VFS file with tree-sitter.
+  - For each function/class: compute AST hash, match against existing LogicNodes.
+  - Matching hash → no change. Different hash for same name/signature → update LogicNode. New function → create LogicNode via import pipeline.
+  - Deleted function (in graph but not in VFS) → prompt or deprecate.
+  - Return report: updated, created, deprecated counts.
+- Validate output with tree-sitter: confirm syntactic validity.
+
+**Acceptance Criteria:**
+- Projected files are syntactically valid Python (tree-sitter parse succeeds).
+- Round-trip: import a real Python file, project it back, diff shows only formatting differences (not logic changes).
+- A module with 3 classes and 10 functions produces correct output with proper ordering.
+- VFS files are written to `.bumblebee/vfs/` (git-tracked, committed).
+- Reverse sync: editing a function in a VFS file and running sync updates the corresponding LogicNode.
+- Reverse sync: adding a new function to a VFS file creates a new LogicNode.
+
+---
+
+### TICKET-841: VFS REST Endpoints + Monaco Integration
+
+**File:** `backend/app/routers/vfs.py`
+
+**Goal:** Expose VFS projection via API and connect to Monaco editor.
+
+**Tasks:**
+- `GET /api/v1/vfs/{module_path}` — Get projected source for a module.
+- `GET /api/v1/vfs` — List all available VFS modules.
+- `POST /api/v1/vfs/project` — Trigger full VFS projection.
+- `GET /api/v1/vfs/node/{node_id}` — Get projected source for a single node.
+- Frontend: update Monaco to load files from VFS endpoints instead of raw disk paths.
+- Frontend: when user edits in Monaco, send changes back through LogicNode update pipeline.
+- `POST /api/v1/vfs/sync` — Trigger reverse sync (VFS → graph) for a module or full VFS.
+
+**Acceptance Criteria:**
+- Monaco displays VFS-projected files.
+- Editing a function in Monaco triggers a LogicNode update (not a raw file write).
+- VFS projection endpoint returns valid Python source.
+- Reverse sync endpoint correctly detects new, modified, and deleted functions in VFS files.
+
+---
+
+## Phase 5: Flows & Gap Analysis
+
+### TICKET-850: Flow Service
+
+**File:** `backend/app/services/flow_service.py`
+
+**Goal:** CRUD operations for Flows + auto-discovery of common flow patterns.
+
+**Tasks:**
+- `create_flow(data: FlowCreate) -> FlowResponse`: Create Flow node + STEP_OF edges.
+- `get_flow(flow_id: str) -> FlowResponse`: Fetch with all step nodes and sub-flows.
+- `list_flows() -> list[FlowResponse]`: List all flows.
+- `update_flow(flow_id: str, data: FlowUpdate) -> FlowResponse`: Update steps, entry/exit points.
+- `delete_flow(flow_id: str) -> None`: Remove flow node and STEP_OF edges.
+- `add_sub_flow(parent_flow_id: str, child_flow_id: str, step_order: int) -> FlowResponse`:
+  - Create CONTAINS_FLOW edge. Update parent's sub_flow_ids.
+- `remove_sub_flow(parent_flow_id: str, child_flow_id: str) -> FlowResponse`:
+  - Remove CONTAINS_FLOW edge. Update parent's sub_flow_ids.
+- `promote_flow_to_node(flow_id: str) -> LogicNodeResponse`:
+  - Create a LogicNode with `kind=flow_function` whose source_text calls all constituent LogicNodes in order.
+  - Create CALLS edges from the new LogicNode to each step.
+  - Set `promoted_node_id` on the Flow. Create PROMOTED_TO edge.
+- `get_flow_hierarchy(flow_id: str) -> FlowHierarchy`:
+  - Recursively traverse CONTAINS_FLOW edges to return the full tree of flows and sub-flows.
+- `discover_flows(entry_node_id: str, max_depth: int) -> list[FlowSuggestion]`:
+  - Starting from an entry point, follow CALLS edges to discover linear and branching paths.
+  - Return suggested flows for user confirmation.
+
+**Acceptance Criteria:**
+- Creating a flow with 5 nodes produces 5 STEP_OF edges with correct ordering.
+- Flow discovery from a known entry point suggests meaningful paths.
+- Updating a flow's node_ids correctly updates STEP_OF edges.
+- Sub-flows: adding a sub-flow creates a CONTAINS_FLOW edge and the hierarchy query returns the correct tree.
+- Promote: promoting a flow creates a LogicNode with `kind=flow_function` and CALLS edges to all steps.
+- Hierarchy: a 3-level deep flow hierarchy (flow → sub-flow → sub-sub-flow) is correctly traversed.
+
+---
+
+### TICKET-851: Gap Analysis Engine
+
+**File:** `backend/app/services/gap_analysis.py`
+
+**Goal:** Detect structural gaps, anti-patterns, and opportunities in the graph.
+
+**Tasks:**
+- `find_dead_ends(scope: str | None) -> list[LogicNodeResponse]`:
+  - LogicNodes with no outgoing CALLS edges and not at the end of a Flow.
+- `find_orphans(scope: str | None) -> list[LogicNodeResponse]`:
+  - LogicNodes with no incoming edges (never called, never depended on).
+- `find_missing_error_handling(scope: str | None) -> list[dict]`:
+  - LogicNodes that CALL error-prone nodes (DB, network, file I/O) without being wrapped in try/except.
+- `find_circular_deps(scope: str | None) -> list[list[str]]`:
+  - Cycles in the CALLS/DEPENDS_ON graph.
+- `find_untested_mutations(scope: str | None) -> list[dict]`:
+  - Variables that are MUTATED but never READS-validated afterward.
+- Return all results as `GapReport`.
+
+**Acceptance Criteria:**
+- Dead ends correctly exclude Flow exit points.
+- Orphan detection excludes entry points and top-level module functions.
+- Circular dependency detection returns the cycle path.
+- Gap analysis on a 500-node graph completes in < 2 seconds.
+
+---
+
+### TICKET-852: Flow & Gap REST Endpoints
+
+**File:** `backend/app/routers/flows.py`, `backend/app/routers/gaps.py`
+
+**Goal:** Expose flow and gap analysis services via REST API.
+
+**Tasks:**
+- **Flow endpoints:**
+  - `POST /api/v1/flows` — Create a flow
+  - `GET /api/v1/flows/{flow_id}` — Get a flow
+  - `GET /api/v1/flows` — List all flows
+  - `PATCH /api/v1/flows/{flow_id}` — Update a flow
+  - `DELETE /api/v1/flows/{flow_id}` — Delete a flow
+  - `POST /api/v1/flows/discover` — Auto-discover flows (`{ "entry_node_id": "...", "max_depth": 10 }`)
+- **Gap analysis endpoints:**
+  - `GET /api/v1/gaps/dead-ends` — Find dead ends (`?scope=`)
+  - `GET /api/v1/gaps/orphans` — Find orphans (`?scope=`)
+  - `GET /api/v1/gaps/missing-error-handling` — Find missing error handling (`?scope=`)
+  - `GET /api/v1/gaps/circular-deps` — Find circular dependencies (`?scope=`)
+  - `GET /api/v1/gaps/untested-mutations` — Find untested mutations (`?scope=`)
+  - `GET /api/v1/gaps/report` — Full gap report (`?scope=`)
+
+**Acceptance Criteria:**
+- All endpoints return proper status codes and Pydantic-validated responses.
+- Gap report endpoint aggregates all analysis types into a single response.
+
+---
+
+## Phase 6: Frontend Adaptations
+
+### TICKET-860: TypeScript Type Updates
+
+**File:** `frontend/src/types/`
+
+**Goal:** Update all TypeScript types to match the new schema.
+
+**Tasks:**
+- Define `LogicNode`, `Variable`, `Flow`, `Edge` interfaces matching backend Pydantic models.
+- Define `LogicNodeKind`, `EdgeType`, `ParamSpec`, `MutationTimeline`, `LogicPack`, `GapReport` types.
+- Remove old `Module`, `Class`, `Function`, `Statement`, `ControlFlow`, `Branch` types.
+- Update API client types for new endpoints.
+
+**Acceptance Criteria:**
+- `npm run typecheck` passes with zero errors.
+- All API response types match backend OpenAPI schema.
+
+---
+
+### TICKET-861: LogicNode + Flow React Flow Components
+
+**File:** `frontend/src/graph/nodes/`, `frontend/src/graph/edges/`
+
+**Goal:** Create React Flow custom node and edge components for the new schema.
+
+**Tasks:**
+- `LogicNodeNode` — renders function/method/class/constant nodes with kind-based icons and colors.
+- `VariableNode` — orange diamond, shows name and type hint.
+- `FlowNode` — renders a flow as a grouped container with entry/exit indicators.
+- Update edge components for new edge types: DEPENDS_ON, IMPLEMENTS, VALIDATES, TRANSFORMS, MEMBER_OF.
+- Keep existing edge components: CALLS, ASSIGNS, MUTATES, READS, PASSES_TO, FEEDS, RETURNS.
+
+**Acceptance Criteria:**
+- All LogicNode kinds render with distinct visual treatment.
+- Variable nodes display name and type hint.
+- Flow containers show step ordering.
+- Edge colors and styles match the design system.
+
+---
+
+### TICKET-862: Zustand Store Adaptations
+
+**File:** `frontend/src/stores/`
+
+**Goal:** Adapt Zustand stores to work with UUID-based LogicNodes instead of file-path-based nodes.
+
+**Tasks:**
+- Update `graphStore` to use UUID keys instead of file paths.
+- Update navigation: `navigateToNode(nodeId: string)` replaces `drillIntoFile(path)`.
+- Update `selectedNode` state to hold `LogicNode | Variable | Flow`.
+- Add `flowStore` for managing flow state.
+- Update WebSocket handlers for new event types.
+
+**Acceptance Criteria:**
+- Clicking a LogicNode navigates by UUID.
+- Flow selection loads and displays flow nodes.
+- WebSocket `graph:updated` events trigger correct store updates.
+
+---
+
+### TICKET-863: Semantic Diff Visualization
+
+**File:** `frontend/src/components/SemanticDiff.tsx`
+
+**Goal:** Visualize semantic diffs from the diff engine on the graph canvas.
+
+**Tasks:**
+- Render added LogicNodes with green dashed borders.
+- Render deprecated LogicNodes with red strikethrough.
+- Render modified LogicNodes with yellow highlight + inline source diff.
+- Render added/removed edges with green/red dashed lines.
+- Show a diff summary panel: counts of added/modified/deprecated nodes and edges.
+- Integration with Git: show diff between current graph and last committed `.bumblebee/` state.
+
+**Acceptance Criteria:**
+- A diff with 3 added, 2 modified, 1 deprecated node renders correctly on the canvas.
+- Clicking a modified node shows old vs new source text.
+- Diff summary panel shows accurate counts.
+
+---
+
+## Phase 7: Agent Toolchain
+
+### TICKET-870: Agent Tool Executor
+
+**File:** `backend/app/services/agent_tools.py`
+
+**Goal:** Implement the full agent toolchain for the new schema.
+
+**Tasks:**
+- **Query tools (read-only):**
+  - `find_node(query, kind?, limit?)` — delegates to `logic_node_service.find_nodes`
+  - `get_node(hash_id)` — delegates to `logic_node_service.get_node`
+  - `get_dependencies(hash_id, depth?, edge_types?)` — delegates to `edge_service.get_dependencies`
+  - `get_dependents(hash_id, depth?)` — delegates to `edge_service.get_dependents`
+  - `get_variable_timeline(variable_id)` — delegates to `variable_timeline_service`
+  - `trace_variable(name, scope?)` — delegates to `variable_timeline_service.trace_variable`
+  - `get_logic_pack(hash_id, hops?)` — builds Logic Pack subgraph
+  - `get_flow(flow_id)` — delegates to `flow_service.get_flow`
+  - `find_gaps(scope, analysis_type)` — delegates to `gap_analysis`
+  - `run_cypher(query, params)` — raw graph query
+  - `project_vfs(scope, format)` — delegates to `vfs_engine`
+- **Mutation tools (write operations):**
+  - `create_node(name, kind, source_text, semantic_intent?, tags?)` — delegates to `logic_node_service.create_node`
+  - `update_node(hash_id, new_source_text)` — delegates to `logic_node_service.update_node`
+  - `deprecate_node(hash_id, replacement?)` — delegates to `logic_node_service.deprecate_node`
+  - `add_edge(source, target, type, properties?)` — delegates to `edge_service.add_edge`
+  - `remove_edge(source, target, type)` — delegates to `edge_service.remove_edge`
+  - `create_flow(name, node_hash_ids, entry_point, exit_points?)` — delegates to `flow_service.create_flow`
+- Register all tools in OpenAI-compatible tool-use format for Ollama.
+
+**Acceptance Criteria:**
+- All 17 tools are registered and callable via the chat endpoint.
+- Each tool delegates to the correct service and returns structured results.
+- Tool schemas are valid OpenAI tool-use format.
+- Error handling: invalid node IDs return clear error messages, not stack traces.
+
+---
+
+### TICKET-871: LLM-Powered Semantic Intent Generation
+
+**File:** `backend/app/services/semantic_intent.py`
+
+**Goal:** Auto-generate `semantic_intent` descriptions for LogicNodes using the LLM.
+
+**Tasks:**
+- Implement `generate_intent(node: LogicNode) -> str`:
+  - Build a prompt with the node's source_text, signature, and immediate edges.
+  - Call the LLM (via ModelAdapter) to generate a one-line description.
+  - Cache results to avoid redundant LLM calls.
+- Implement `batch_generate_intents(node_ids: list[str]) -> dict[str, str]`:
+  - Generate intents for multiple nodes efficiently.
+- Hook into the import pipeline: after importing, optionally generate intents for all new nodes.
+- Hook into `create_node`: if `semantic_intent` is not provided, auto-generate it.
+
+**Acceptance Criteria:**
+- Generated intents are concise (< 100 chars) and accurately describe the node's purpose.
+- Batch generation processes 100 nodes in < 60 seconds with a local 7B model.
+- Cached intents are not re-generated unless the node's source_text changes.
+
+---
+
+## Phase 8: Documentation
+
+### TICKET-880: Rewrite `docs/manifesto.md`
+
+**Goal:** Replace the existing manifesto with the Code-as-Data vision.
+
+**Content:** Two-tier node model (LogicNodes + Variables), VFS projections, Graph-to-Git serialization, agent-native interface, mutation timeline as killer feature.
+
+**Acceptance Criteria:** Manifesto clearly communicates the inversion: graph is source of truth, files are projections.
+
+---
+
+### TICKET-881: Update `docs/decisions.md`
+
+**Goal:** Add new architecture decisions for the Code-as-Data refactor.
+
+**Content:** Serialization format (JSON in Git), hash identity (UUID7 + SHA-256), VFS strategy, variable nodes rationale, edge manifest design, node identity rules.
+
+**Acceptance Criteria:** All new technical decisions are documented with rationale.
+
+---
+
+### TICKET-882: Replace `docs/tickets.md`
+
+**Goal:** Replace the existing ticket backlog with the 800-series phased plan.
+
+**Content:** Full acceptance criteria for all tickets across 8 phases.
+
+**Acceptance Criteria:** Tickets reference `docs/schema.md` for format specs. Execution order is clear.
+
+---
+
+### TICKET-883: Create `docs/schema.md`
+
+**Goal:** Full JSON schema specification for the `.bumblebee/` serialization format.
+
+**Content:** LogicNode, Variable, Edge manifest, Flow, meta.json — with example JSON for each. FalkorDB index definitions. Key Cypher query patterns.
+
+**Acceptance Criteria:** A developer can implement the serializer/deserializer from this spec alone.
 
 ---
 
 ## Execution Order
 
 ```
-TICKET-101 (scaffold)
-    └── TICKET-102 (structural nodes)
-        └── TICKET-103 (relationship edges + ordering)
-            └── TICKET-104 (statement & control flow nodes)  ← NEW
-                └── TICKET-201 (variable nodes)
-                    └── TICKET-202 (mutation/read edges)
-                        └── TICKET-203 (PASSES_TO)
-                            └── TICKET-205 (FEEDS edges)  ← NEW
-                                └── TICKET-204 (mutation timeline query)
-                                    ├── TICKET-206 (code generator)  ← NEW
-                                    │   └── TICKET-207 (round-trip tests)  ← NEW
-                                    ├── TICKET-501 (query template library)
-                                    │   └── TICKET-502 (NL → Cypher agent)
-                                    ├── TICKET-301 (graph canvas)
-                                    │   └── TICKET-302 (Logic Pack + Function Flow View)
-                                    │       └── TICKET-303 (Execution Flow Explorer)  ← NEW
-                                    │           └── TICKET-401 (Monaco context manager)
-                                    │               └── TICKET-402 (bidirectional highlighting)
-                                    │                   └── TICKET-403 (graph-based editing)  ← NEW
-                                    └── TICKET-601 (file watcher)
-                                        └── TICKET-602 (ghost preview)
+Phase 8 (docs) ─── can start immediately, no code dependencies
+
+Phase 0 (foundation) ─┬─ Phase 1 (CRUD) ─┬─ Phase 3 (import) ─── test with real repo data
+                       │                   ├─ Phase 4 (VFS)
+                       │                   ├─ Phase 5 (flows + gaps)
+                       │                   └─ Phase 6 (frontend)
+                       └─ Phase 2 (serialization) ──── Phase 7 (agent toolchain)
 ```
 
-**Phase 1 (backend core):** 101 → 102 → 103 → 104 → 201 → 202 → 203 → 205 → 204
+**Recommended single-developer order:**
 
-**Phase 2 (code generation):** 206 → 207
+Phase 8 (docs) → Phase 0 → Phase 1 → Phase 3 → Phase 2 → Phase 4 → Phase 5 → Phase 6 → Phase 7
 
-**Phase 3 (frontend + graph viz):** 301 → 302 → 303 → 401 → 402 → 403
+---
 
-**Phase 4 (AI layer):** 501 → 502
+## Verification Plan
 
-**Phase 5 (live sync):** 601 → 602
-
-**Phase 6 (layout + terminal nav):** 701 → 702
-
-Phases 2, 3, 4 can begin in parallel once Phase 1 is complete. Phase 5 depends on Phases 2 and 3. Phase 6 can begin any time after Phase 3 (requires the graph canvas and store infrastructure).
+1. **Import pipeline test:** Import the bumblebee_ide backend itself, verify all functions become LogicNodes with correct hash IDs and edges.
+2. **Round-trip test:** Serialize graph to `.bumblebee/`, clear FalkorDB, deserialize, verify graph is identical.
+3. **VFS test:** Project graph to virtual files, parse with tree-sitter, verify syntax validity.
+4. **Semantic diff test:** Make a node change, compute diff, verify correct added/deprecated/remapped report.
+5. **Agent tool test:** Use each agent tool via the chat endpoint, verify correct graph operations.

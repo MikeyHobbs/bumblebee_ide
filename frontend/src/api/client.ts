@@ -204,3 +204,135 @@ export function useFileContent(path: string | null) {
     enabled: path !== null,
   });
 }
+
+// --- 800-series API hooks ---
+
+export interface LogicNodeResponse {
+  id: string;
+  ast_hash: string;
+  kind: string;
+  name: string;
+  module_path: string;
+  signature: string;
+  source_text: string;
+  semantic_intent: string | null;
+  docstring: string | null;
+  params: Array<{ name: string; type_hint: string | null }>;
+  return_type: string | null;
+  tags: string[];
+  status: string;
+  start_line: number | null;
+  end_line: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function useLogicNodes(query?: string, kind?: string, limit = 100) {
+  return useQuery({
+    queryKey: ["logic-nodes", query, kind, limit],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (query) params.set("query", query);
+      if (kind) params.set("kind", kind);
+      params.set("limit", String(limit));
+      return apiFetch<LogicNodeResponse[]>(`/api/v1/nodes?${params.toString()}`);
+    },
+  });
+}
+
+export function useLogicNode(nodeId: string | null) {
+  return useQuery({
+    queryKey: ["logic-node", nodeId],
+    queryFn: () => apiFetch<LogicNodeResponse>(`/api/v1/nodes/${nodeId!}`),
+    enabled: nodeId !== null,
+  });
+}
+
+export function useNodeEdges(nodeId: string | null, direction = "outgoing") {
+  return useQuery({
+    queryKey: ["node-edges", nodeId, direction],
+    queryFn: () =>
+      apiFetch<Array<{ type: string; source: string; target: string; properties: Record<string, unknown> }>>(
+        `/api/v1/nodes/${nodeId!}/edges?direction=${direction}`,
+      ),
+    enabled: nodeId !== null,
+  });
+}
+
+export function useAllEdges() {
+  return useQuery({
+    queryKey: ["all-edges"],
+    queryFn: () =>
+      apiFetch<Array<{ type: string; source: string; target: string; properties: Record<string, unknown> }>>(
+        "/api/v1/edges/all",
+      ),
+  });
+}
+
+export function useImportDirectory() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (dirPath: string) => {
+      return apiFetch<{ nodes_created: number; edges_created: number; files_processed: number }>(
+        "/api/v1/import/directory",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: dirPath }),
+        },
+      );
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["logic-nodes"] });
+      void queryClient.invalidateQueries({ queryKey: ["all-edges"] });
+    },
+  });
+}
+
+export function useFlows() {
+  return useQuery({
+    queryKey: ["flows"],
+    queryFn: () =>
+      apiFetch<Array<{ id: string; name: string; description: string | null; node_ids: string[]; entry_point: string }>>(
+        "/api/v1/flows",
+      ),
+  });
+}
+
+export function useFlow(flowId: string | null) {
+  return useQuery({
+    queryKey: ["flow", flowId],
+    queryFn: () =>
+      apiFetch<{ id: string; name: string; description: string | null; node_ids: string[]; entry_point: string }>(
+        `/api/v1/flows/${flowId!}`,
+      ),
+    enabled: flowId !== null,
+  });
+}
+
+export function useGapReport(scope?: string) {
+  return useQuery({
+    queryKey: ["gap-report", scope],
+    queryFn: () => {
+      const params = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+      return apiFetch<{ dead_ends: LogicNodeResponse[]; orphans: LogicNodeResponse[]; circular_deps: string[][] }>(
+        `/api/v1/flows/gaps${params}`,
+      );
+    },
+  });
+}
+
+export function useSemanticDiff(path?: string) {
+  return useQuery({
+    queryKey: ["semantic-diff", path],
+    queryFn: () =>
+      apiFetch<{
+        added_nodes: LogicNodeResponse[];
+        removed_nodes: LogicNodeResponse[];
+        modified_nodes: Array<{ id: string; old_ast_hash: string; new_ast_hash: string }>;
+        added_edges: Array<{ type: string; source: string; target: string }>;
+        removed_edges: Array<{ type: string; source: string; target: string }>;
+      }>(`/api/v1/import/diff${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+    enabled: false, // Only fetch on demand
+  });
+}

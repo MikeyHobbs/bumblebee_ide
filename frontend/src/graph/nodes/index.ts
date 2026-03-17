@@ -10,6 +10,8 @@ import VariablePill from "./VariablePill";
 import FolderNode from "./FolderNode";
 import LoopGroupNode from "./LoopGroupNode";
 import TerminalNode from "./TerminalNode";
+import LogicNodeNode from "./LogicNodeNode";
+import FlowNode from "./FlowNode";
 
 export const nodeTypes: NodeTypes = {
   Module: ModuleNode,
@@ -23,4 +25,6 @@ export const nodeTypes: NodeTypes = {
   Folder: FolderNode,
   LoopGroup: LoopGroupNode,
   Terminal: TerminalNode,
+  LogicNode: LogicNodeNode,
+  Flow: FlowNode,
 };

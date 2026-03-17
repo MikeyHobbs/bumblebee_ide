@@ -27,10 +27,10 @@ export function computeForceLayout(
     y: n.position.y || Math.random() * 600,
   }));
 
-  const simLinks: SimLink[] = edges.map((e) => ({
-    source: e.source,
-    target: e.target,
-  }));
+  const nodeIds = new Set(simNodes.map((n) => n.id));
+  const simLinks: SimLink[] = edges
+    .filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
+    .map((e) => ({ source: e.source, target: e.target }));
 
   const simulation = forceSimulation(simNodes)
     .force(

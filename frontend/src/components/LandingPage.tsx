@@ -40,12 +40,16 @@ function LandingPage({ onIndexed }: LandingPageProps) {
     setRecentRepos(getRecentRepos());
   }, []);
 
+  const isPending = indexMutation.isPending;
+
   const handleSubmit = useCallback(
     (path: string) => {
       if (!path.trim()) return;
-      indexMutation.mutate(path.trim(), {
+      const trimmed = path.trim();
+      // Fast indexer returns 202 immediately; progress via WebSocket
+      indexMutation.mutate(trimmed, {
         onSuccess: () => {
-          saveRecentRepo(path.trim());
+          saveRecentRepo(trimmed);
           onIndexed();
         },
       });
@@ -98,25 +102,25 @@ function LandingPage({ onIndexed }: LandingPageProps) {
           />
           <button
             type="submit"
-            disabled={indexMutation.isPending || !repoPath.trim()}
+            disabled={isPending || !repoPath.trim()}
             className="w-full px-3 py-2 text-sm font-mono border"
             style={{
               background:
-                indexMutation.isPending || !repoPath.trim()
+                isPending || !repoPath.trim()
                   ? "var(--bg-tertiary)"
                   : "var(--node-function)",
               borderColor: "var(--node-function)",
               color:
-                indexMutation.isPending || !repoPath.trim()
+                isPending || !repoPath.trim()
                   ? "var(--text-muted)"
                   : "var(--bg-primary)",
               cursor:
-                indexMutation.isPending || !repoPath.trim()
+                isPending || !repoPath.trim()
                   ? "not-allowed"
                   : "pointer",
             }}
           >
-            {indexMutation.isPending ? "Indexing..." : "Index Repository"}
+            {isPending ? "Indexing..." : "Index Repository"}
           </button>
         </form>
 

@@ -1,12 +1,10 @@
-import { useRef, useCallback, useEffect } from "react";
+import { useRef, useCallback, useEffect, useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import { useEditorStore } from "@/store/editorStore";
 import { useGraphStore } from "@/store/graphStore";
-import { useFileContent } from "@/api/client";
-import { getOrCreateModel } from "@/editor/ModelManager";
-import MutationGutter from "./MutationGutter";
-import type { GraphNode, GraphEdge } from "@/types/graph";
+import { getOrCreateNodeModel } from "@/editor/ModelManager";
+import ExternalRefsPanel from "./ExternalRefsPanel";
 
 interface GraphNodeResponse {
   id: string;
@@ -14,32 +12,25 @@ interface GraphNodeResponse {
   properties: Record<string, string | number | boolean | null>;
 }
 
-interface UsagesResponse {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
+let definitionProviderRegistered = false;
+
+function localName(qualifiedName: string): string {
+  const parts = qualifiedName.split(".");
+  return parts[parts.length - 1] ?? qualifiedName;
 }
 
-let definitionProviderRegistered = false;
-let editorOpenerRegistered = false;
-
-/**
- * Stash of resolved definition targets keyed by "filePath:line".
- * The DefinitionProvider populates this, the EditorOpener reads it
- * to know which node the user navigated to and fetches its usages graph.
- */
-const resolvedTargets = new Map<string, string>(); // "path:line" → qualified node name
-
 function CodeEditor() {
-  const activeFile = useEditorStore((s) => s.activeFile);
+  const activeNodeView = useEditorStore((s) => s.activeNodeView);
   const setCursorPosition = useEditorStore((s) => s.setCursorPosition);
-  const { data: fileData } = useFileContent(activeFile);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
+  const [editorReady, setEditorReady] = useState(false);
 
   const handleMount: OnMount = useCallback(
     (editor, monaco) => {
       editorRef.current = editor;
       monacoRef.current = monaco;
+      setEditorReady(true);
 
       editor.onDidChangeCursorPosition((e) => {
         setCursorPosition({
@@ -70,54 +61,7 @@ function CodeEditor() {
       });
       monaco.editor.setTheme("bumblebee-dark");
 
-      // Intercept navigation from go-to-definition — open file, scroll, and show usages graph
-      if (!editorOpenerRegistered) {
-        editorOpenerRegistered = true;
-        monaco.editor.registerEditorOpener({
-          openCodeEditor(
-            _source: Monaco.editor.ICodeEditor,
-            resource: Monaco.Uri,
-            selectionOrPosition?: Monaco.IRange | Monaco.IPosition,
-          ) {
-            const filePath = resource.path.startsWith("/") ? resource.path.slice(1) : resource.path;
-            if (!filePath) return true;
-
-            // Open file and scroll
-            useEditorStore.getState().openFile(filePath);
-            const line = selectionOrPosition && "startLineNumber" in selectionOrPosition
-              ? selectionOrPosition.startLineNumber
-              : selectionOrPosition && "lineNumber" in selectionOrPosition
-                ? selectionOrPosition.lineNumber
-                : null;
-            if (line !== null) {
-              useEditorStore.getState().requestRevealLine(line);
-            }
-
-            // Look up which node this target corresponds to and show its usages graph
-            const targetKey = `${filePath}:${line ?? 0}`;
-            const nodeName = resolvedTargets.get(targetKey);
-            if (nodeName) {
-              void (async () => {
-                try {
-                  const res = await fetch(`/api/v1/graph/usages/${encodeURIComponent(nodeName)}`);
-                  if (res.ok) {
-                    const usages = (await res.json()) as UsagesResponse;
-                    if (usages.nodes.length > 0) {
-                      const shortName = nodeName.split(".").pop() ?? nodeName;
-                      useGraphStore.getState().showQueryResult(shortName, usages.nodes, usages.edges);
-                    }
-                  }
-                } catch { /* non-critical */ }
-              })();
-            }
-
-            return true;
-          },
-        });
-      }
-
-      // Cmd+Click / Ctrl+Click: resolve symbol to graph nodes
-      // Returns ALL matches — Monaco shows a picker if ambiguous, single-click if unique
+      // Cmd+Click / Ctrl+Click: resolve symbol to graph node and navigate
       if (!definitionProviderRegistered) {
         definitionProviderRegistered = true;
         monaco.languages.registerDefinitionProvider("python", {
@@ -127,10 +71,9 @@ function CodeEditor() {
             const symbol = word.word;
 
             try {
-              // Find all graph nodes matching this symbol
-              const allNodes: GraphNodeResponse[] = [];
+              const graphNodes: GraphNodeResponse[] = [];
 
-              // 1. suffix match: module.Class.symbol
+              // 1. suffix match
               const res1 = await fetch("/api/v1/query", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -140,11 +83,11 @@ function CodeEditor() {
               });
               if (res1.ok) {
                 const data = (await res1.json()) as { nodes: GraphNodeResponse[] };
-                allNodes.push(...data.nodes);
+                graphNodes.push(...data.nodes);
               }
 
-              // 2. exact match: just "symbol" (for top-level functions/modules)
-              if (allNodes.length === 0) {
+              // 2. exact match
+              if (graphNodes.length === 0) {
                 const res2 = await fetch("/api/v1/query", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
@@ -154,58 +97,42 @@ function CodeEditor() {
                 });
                 if (res2.ok) {
                   const data = (await res2.json()) as { nodes: GraphNodeResponse[] };
-                  allNodes.push(...data.nodes);
+                  graphNodes.push(...data.nodes);
                 }
               }
 
-              if (allNodes.length === 0) return null;
+              if (graphNodes.length === 0) return null;
 
-              // Build definition locations and stash node names for the EditorOpener
-              resolvedTargets.clear();
-              const locations: Monaco.languages.Location[] = [];
+              // Navigate to the first match as a NodeView
+              const target = graphNodes[0]!;
+              const sourceText = typeof target.properties["source_text"] === "string"
+                ? target.properties["source_text"]
+                : "";
+              const modulePath = typeof target.properties["module_path"] === "string"
+                ? target.properties["module_path"]
+                : "";
+              const kind = typeof target.properties["kind"] === "string"
+                ? target.properties["kind"]
+                : "";
+              const name = typeof target.properties["name"] === "string"
+                ? target.properties["name"]
+                : target.id;
 
-              for (const node of allNodes) {
-                const mp = node.properties["module_path"];
-                const sl = node.properties["start_line"];
-                const name = typeof node.properties["name"] === "string"
-                  ? node.properties["name"] as string
-                  : node.id;
+              if (sourceText) {
+                useEditorStore.getState().openNodeView({
+                  nodeId: target.id,
+                  name: localName(name),
+                  kind,
+                  sourceText,
+                  modulePath,
+                });
 
-                if (typeof mp === "string" && typeof sl === "number") {
-                  const targetKey = `${mp}:${sl}`;
-                  resolvedTargets.set(targetKey, name);
-                  locations.push({
-                    uri: monaco.Uri.parse(`file://${mp}`),
-                    range: {
-                      startLineNumber: sl,
-                      startColumn: 1,
-                      endLineNumber: sl,
-                      endColumn: 1,
-                    },
-                  });
-                }
+                // Also navigate graph to this node
+                const shortName = name.split(".").pop() ?? name;
+                useGraphStore.getState().navigateToNode(target.id, shortName);
               }
 
-              // If only one match, also eagerly show its usages graph
-              if (locations.length === 1 && allNodes.length === 1) {
-                const nodeName = typeof allNodes[0]!.properties["name"] === "string"
-                  ? allNodes[0]!.properties["name"] as string
-                  : allNodes[0]!.id;
-                void (async () => {
-                  try {
-                    const usagesRes = await fetch(`/api/v1/graph/usages/${encodeURIComponent(nodeName)}`);
-                    if (usagesRes.ok) {
-                      const usages = (await usagesRes.json()) as UsagesResponse;
-                      if (usages.nodes.length > 0) {
-                        const shortName = nodeName.split(".").pop() ?? nodeName;
-                        useGraphStore.getState().showQueryResult(shortName, usages.nodes, usages.edges);
-                      }
-                    }
-                  } catch { /* non-critical */ }
-                })();
-              }
-
-              return locations.length > 0 ? locations : null;
+              return null; // We handle navigation ourselves
             } catch {
               return null;
             }
@@ -216,25 +143,18 @@ function CodeEditor() {
     [setCursorPosition],
   );
 
-  const revealLine = useEditorStore((s) => s.revealLine);
-  const clearRevealLine = useEditorStore((s) => s.clearRevealLine);
-
+  // Set Monaco model when activeNodeView changes
   useEffect(() => {
-    if (!activeFile || !fileData || !monacoRef.current || !editorRef.current) return;
-    const model = getOrCreateModel(
+    if (!activeNodeView || !monacoRef.current || !editorRef.current) return;
+    const model = getOrCreateNodeModel(
       monacoRef.current,
-      activeFile,
-      fileData.content,
+      activeNodeView.nodeId,
+      activeNodeView.sourceText,
+      activeNodeView.modulePath,
     );
     editorRef.current.setModel(model);
-  }, [activeFile, fileData]);
-
-  useEffect(() => {
-    if (revealLine === null || !editorRef.current) return;
-    editorRef.current.revealLineInCenter(revealLine);
-    editorRef.current.setPosition({ lineNumber: revealLine, column: 1 });
-    clearRevealLine();
-  }, [revealLine, clearRevealLine]);
+    editorRef.current.revealLineInCenter(1);
+  }, [activeNodeView, editorReady]);
 
   // Graph → Editor highlight decorations
   const highlightedLines = useEditorStore((s) => s.highlightedLines);
@@ -264,51 +184,49 @@ function CodeEditor() {
     }
   }, [highlightedLines]);
 
-  if (!activeFile) {
+  if (!activeNodeView) {
     return (
       <div
         className="flex items-center justify-center h-full text-sm"
         style={{ color: "var(--text-muted)" }}
       >
-        No file open
+        Click a graph node to view its source
       </div>
     );
   }
 
   return (
-    <div className="relative h-full">
-      <Editor
-        defaultLanguage="plaintext"
-        theme="bumblebee-dark"
-        onMount={handleMount}
-        options={{
-          fontSize: 13,
-          fontFamily: "'JetBrains Mono', 'SF Mono', 'Consolas', monospace",
-          lineNumbers: "on",
-          minimap: { enabled: false },
-          scrollBeyondLastLine: false,
-          renderWhitespace: "selection",
-          tabSize: 4,
-          wordWrap: "off",
-          padding: { top: 8, bottom: 8 },
-          glyphMargin: true,
-          folding: true,
-          lineDecorationsWidth: 16,
-          overviewRulerLanes: 0,
-          hideCursorInOverviewRuler: true,
-          overviewRulerBorder: false,
-          scrollbar: {
-            verticalScrollbarSize: 6,
-            horizontalScrollbarSize: 6,
-          },
-        }}
-      />
-      {activeFile && editorRef.current && (
-        <MutationGutter
-          editor={editorRef.current}
-          filePath={activeFile}
+    <div className="flex flex-col h-full">
+      <div className="flex-1 min-h-0">
+        <Editor
+          defaultLanguage="plaintext"
+          theme="bumblebee-dark"
+          onMount={handleMount}
+          options={{
+            fontSize: 13,
+            fontFamily: "'JetBrains Mono', 'SF Mono', 'Consolas', monospace",
+            lineNumbers: "on",
+            minimap: { enabled: false },
+            scrollBeyondLastLine: false,
+            renderWhitespace: "selection",
+            tabSize: 4,
+            wordWrap: "off",
+            padding: { top: 8, bottom: 8 },
+            glyphMargin: false,
+            folding: true,
+            lineDecorationsWidth: 16,
+            overviewRulerLanes: 0,
+            hideCursorInOverviewRuler: true,
+            overviewRulerBorder: false,
+            readOnly: true,
+            scrollbar: {
+              verticalScrollbarSize: 6,
+              horizontalScrollbarSize: 6,
+            },
+          }}
         />
-      )}
+      </div>
+      <ExternalRefsPanel nodeId={activeNodeView.nodeId} />
     </div>
   );
 }

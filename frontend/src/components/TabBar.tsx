@@ -1,15 +1,13 @@
-import { X, Pin } from "lucide-react";
+import { ArrowLeft, X } from "lucide-react";
 import { useEditorStore } from "@/store/editorStore";
 
 function TabBar() {
-  const openFiles = useEditorStore((s) => s.openFiles);
-  const activeFile = useEditorStore((s) => s.activeFile);
-  const pinnedFiles = useEditorStore((s) => s.pinnedFiles);
-  const setActiveFile = useEditorStore((s) => s.setActiveFile);
-  const closeFile = useEditorStore((s) => s.closeFile);
-  const pinFile = useEditorStore((s) => s.pinFile);
+  const activeNodeView = useEditorStore((s) => s.activeNodeView);
+  const nodeViewHistory = useEditorStore((s) => s.nodeViewHistory);
+  const goBackNode = useEditorStore((s) => s.goBackNode);
+  const clearNodeView = useEditorStore((s) => s.clearNodeView);
 
-  if (openFiles.length === 0) {
+  if (!activeNodeView) {
     return (
       <div
         className="h-8 border-b"
@@ -23,66 +21,79 @@ function TabBar() {
 
   return (
     <div
-      className="h-8 flex items-stretch overflow-x-auto border-b"
+      className="h-8 flex items-center overflow-x-auto border-b"
       style={{
         background: "var(--bg-secondary)",
         borderColor: "var(--border)",
       }}
     >
-      {openFiles.map((filePath) => {
-        const isActive = filePath === activeFile;
-        const isPinned = pinnedFiles.has(filePath);
-        const fileName = filePath.split("/").pop() ?? filePath;
-
-        return (
-          <div
-            key={filePath}
-            className="flex items-center gap-1 px-3 text-xs font-mono border-r cursor-pointer"
-            style={{
-              background: isActive
-                ? "var(--bg-primary)"
-                : "var(--bg-secondary)",
-              borderColor: "var(--border)",
-              color: isActive
-                ? "var(--text-primary)"
-                : "var(--text-secondary)",
-              borderBottom: isActive
-                ? "1px solid var(--bg-primary)"
-                : "none",
-            }}
-            onClick={() => setActiveFile(filePath)}
-          >
-            {isPinned && (
-              <Pin
-                size={10}
-                style={{ color: "var(--node-variable)" }}
-              />
-            )}
-            <span>{fileName}</span>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                closeFile(filePath);
-              }}
-              className="ml-1 opacity-50 hover:opacity-100"
-              style={{ background: "none", border: "none", cursor: "pointer", color: "inherit" }}
-            >
-              <X size={12} />
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                pinFile(filePath);
-              }}
-              className="opacity-30 hover:opacity-100"
-              style={{ background: "none", border: "none", cursor: "pointer", color: "inherit" }}
-              title={isPinned ? "Unpin" : "Pin"}
-            >
-              <Pin size={10} />
-            </button>
-          </div>
-        );
-      })}
+      {nodeViewHistory.length > 0 && (
+        <button
+          onClick={goBackNode}
+          className="flex items-center px-2 h-full"
+          style={{
+            background: "none",
+            border: "none",
+            borderRight: "1px solid var(--border)",
+            cursor: "pointer",
+            color: "var(--text-secondary)",
+          }}
+          title="Go back"
+        >
+          <ArrowLeft size={14} />
+        </button>
+      )}
+      {/* History breadcrumb */}
+      {nodeViewHistory.map((view, i) => (
+        <button
+          key={`${view.nodeId}-${i}`}
+          onClick={() => {
+            // Navigate back to this point in history
+            const store = useEditorStore.getState();
+            const stepsBack = nodeViewHistory.length - i;
+            for (let s = 0; s < stepsBack; s++) {
+              store.goBackNode();
+            }
+          }}
+          className="flex items-center px-3 h-full text-xs font-mono border-r"
+          style={{
+            background: "var(--bg-secondary)",
+            borderColor: "var(--border)",
+            color: "var(--text-muted)",
+            cursor: "pointer",
+          }}
+        >
+          {view.name}
+        </button>
+      ))}
+      {/* Active node tab */}
+      <div
+        className="flex items-center gap-1 px-3 h-full text-xs font-mono border-r"
+        style={{
+          background: "var(--bg-primary)",
+          borderColor: "var(--border)",
+          color: "var(--text-primary)",
+          borderBottom: "1px solid var(--bg-primary)",
+        }}
+      >
+        <span
+          className="text-[10px] uppercase mr-1"
+          style={{ color: "var(--text-muted)" }}
+        >
+          {activeNodeView.kind}
+        </span>
+        <span>{activeNodeView.name}</span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            clearNodeView();
+          }}
+          className="ml-1 opacity-50 hover:opacity-100"
+          style={{ background: "none", border: "none", cursor: "pointer", color: "inherit" }}
+        >
+          <X size={12} />
+        </button>
+      </div>
     </div>
   );
 }

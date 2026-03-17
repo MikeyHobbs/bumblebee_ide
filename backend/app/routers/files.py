@@ -13,25 +13,29 @@ router = APIRouter(prefix="/api/v1", tags=["files"])
 
 @router.get("/file")
 async def get_file_content(
-    path: str = Query(..., description="Relative path within the indexed repository"),
+    path: str = Query(..., description="File path (absolute, or relative to the indexed repository)"),
 ) -> dict[str, str]:
-    """Serve raw file content from the indexed repo for Monaco.
+    """Serve raw file content for Monaco.
+
+    Accepts either an absolute path (from 800-series LogicNode module_path)
+    or a relative path within the watched repository.
 
     Args:
-        path: Relative file path within the watched repository.
+        path: Absolute or relative file path.
 
     Returns:
         Dict with path and content keys.
     """
-    if not settings.watch_path:
-        raise HTTPException(status_code=400, detail="No repository indexed. Use POST /api/v1/index first.")
-
-    abs_path = os.path.join(os.path.abspath(settings.watch_path), path)
-
-    # Prevent directory traversal
-    repo_root = os.path.abspath(settings.watch_path)
-    if not os.path.abspath(abs_path).startswith(repo_root):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
+    # If the path is absolute, serve it directly (800-series LogicNode module_path)
+    if os.path.isabs(path):
+        abs_path = os.path.abspath(path)
+    elif settings.watch_path:
+        abs_path = os.path.join(os.path.abspath(settings.watch_path), path)
+        repo_root = os.path.abspath(settings.watch_path)
+        if not abs_path.startswith(repo_root):
+            raise HTTPException(status_code=403, detail="Path traversal not allowed")
+    else:
+        raise HTTPException(status_code=400, detail="No repository indexed")
 
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")

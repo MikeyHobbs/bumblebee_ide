@@ -137,13 +137,11 @@ function TerminalChat() {
 
   // Graph store hooks for navigation sync
   const viewMode = useGraphStore((s) => s.viewMode);
-  const activeModulePath = useGraphStore((s) => s.activeModulePath);
-  const activeNodeName = useGraphStore((s) => s.activeNodeName);
+  const activeNodeId = useGraphStore((s) => s.activeNodeId);
   const breadcrumb = useGraphStore((s) => s.breadcrumb);
-  const drillIntoFile = useGraphStore((s) => s.drillIntoFile);
-  const drillIntoClass = useGraphStore((s) => s.drillIntoClass);
-  const drillIntoFunction = useGraphStore((s) => s.drillIntoFunction);
-  const navigateTo = useGraphStore((s) => s.navigateTo);
+  const navigateToNode = useGraphStore((s) => s.navigateToNode);
+  const navigateBack = useGraphStore((s) => s.navigateBack);
+  const goHome = useGraphStore((s) => s.goHome);
   const showQueryResult = useGraphStore((s) => s.showQueryResult);
 
   useEffect(() => {
@@ -206,13 +204,13 @@ function TerminalChat() {
 
       if (cmd === "cd") {
         if (!arg || arg === "/") {
-          navigateTo(0);
+          goHome();
           addMsg("cli_result", "/");
           return;
         }
         if (arg === "..") {
           if (breadcrumb.length > 1) {
-            navigateTo(breadcrumb.length - 2);
+            navigateBack(breadcrumb.length - 2);
             const parent = breadcrumb[breadcrumb.length - 2];
             addMsg("cli_result", parent?.label ?? "/");
           } else {
@@ -220,7 +218,7 @@ function TerminalChat() {
           }
           return;
         }
-        // Find a matching child to drill into
+        // Search for a matching node by name
         const children = await fetchCurrentChildren();
         if (!children) {
           addMsg("system", "Cannot list children in this view");
@@ -231,20 +229,19 @@ function TerminalChat() {
           return name === arg || n.id === arg || name.toLowerCase() === arg.toLowerCase();
         });
         if (!match) {
-          // Try partial match
           const partial = children.nodes.find((n) => {
             const name = localName(n.id).toLowerCase();
             return name.includes(arg.toLowerCase());
           });
           if (partial) {
-            drillIntoNode(partial);
+            navigateToNode(partial.id, localName(partial.id));
             addMsg("cli_result", `→ ${localName(partial.id)}`);
           } else {
             addMsg("system", `Not found: ${arg}`);
           }
           return;
         }
-        drillIntoNode(match);
+        navigateToNode(match.id, localName(match.id));
         addMsg("cli_result", `→ ${localName(match.id)}`);
         return;
       }
@@ -326,9 +323,9 @@ function TerminalChat() {
           return;
         }
         try {
-          const scope = activeNodeName
-            ? `MATCH (scope {name: '${activeNodeName.replace(/'/g, "\\'")}'})-[:DEFINES|CONTAINS*1..4]->(n) WHERE n.name =~ '(?i).*${arg.replace(/'/g, "\\'")}.*' RETURN n LIMIT 20`
-            : `MATCH (n) WHERE n.name =~ '(?i).*${arg.replace(/'/g, "\\'")}.*' RETURN n LIMIT 20`;
+          const scope = activeNodeId
+            ? `MATCH (scope:LogicNode {id: '${activeNodeId.replace(/'/g, "\\'")}'})-[:CALLS|DEPENDS_ON*1..4]->(n:LogicNode) WHERE n.name =~ '(?i).*${arg.replace(/'/g, "\\'")}.*' RETURN n LIMIT 20`
+            : `MATCH (n:LogicNode) WHERE n.name =~ '(?i).*${arg.replace(/'/g, "\\'")}.*' RETURN n LIMIT 20`;
           const res = await fetchJson<CypherQueryResponse>("/api/v1/query", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -376,7 +373,7 @@ function TerminalChat() {
 
       addMsg("system", `Unknown command: ${cmd}. Type 'help' for available commands.`);
     },
-    [breadcrumb, viewMode, activeModulePath, activeNodeName, navigateTo, drillIntoFile, drillIntoClass, drillIntoFunction, addMsg],
+    [breadcrumb, viewMode, activeNodeId, navigateBack, goHome, navigateToNode, addMsg],
   );
 
   /** Fetch JSON helper. */
@@ -392,35 +389,41 @@ function TerminalChat() {
 
   /** Fetch children of the current graph position. */
   async function fetchCurrentChildren(): Promise<SubgraphResponse | null> {
-    if (viewMode === "modules") {
-      return fetchJson<SubgraphResponse>("/api/v1/graph/modules");
+    if (viewMode === "knowledge-graph") {
+      // In knowledge graph mode, fetch all LogicNodes as a flat list
+      const nodes = await fetchJson<Array<{ id: string; name: string; kind: string; module_path: string }>>("/api/v1/nodes?limit=200");
+      if (!nodes) return null;
+      return {
+        nodes: nodes.map((n) => ({
+          id: n.id,
+          label: "LogicNode" as const,
+          properties: { name: n.name, kind: n.kind, module_path: n.module_path },
+        })),
+        edges: [],
+      };
     }
-    if (viewMode === "file-members" && activeModulePath) {
-      return fetchJson<SubgraphResponse>(`/api/v1/graph/file-members/${activeModulePath}`);
-    }
-    if (viewMode === "class-detail" && activeNodeName) {
-      return fetchJson<SubgraphResponse>(`/api/v1/graph/class/${encodeURIComponent(activeNodeName)}`);
-    }
-    if (viewMode === "function-detail" && activeNodeName) {
-      return fetchJson<SubgraphResponse>(`/api/v1/graph/function/${encodeURIComponent(activeNodeName)}`);
+    if (viewMode === "node-detail" && activeNodeId) {
+      // Fetch edges to find connected nodes
+      const edges = await fetchJson<Array<{ type: string; source: string; target: string }>>(
+        `/api/v1/nodes/${activeNodeId}/edges?direction=outgoing`,
+      );
+      if (!edges) return null;
+      const nodeIds = edges.map((e) => e.target);
+      const nodes = await Promise.all(
+        nodeIds.slice(0, 20).map((id) =>
+          fetchJson<{ id: string; name: string; kind: string; module_path: string }>(`/api/v1/nodes/${id}`),
+        ),
+      );
+      return {
+        nodes: nodes.filter(Boolean).map((n) => ({
+          id: n!.id,
+          label: "LogicNode" as const,
+          properties: { name: n!.name, kind: n!.kind, module_path: n!.module_path },
+        })),
+        edges: [],
+      };
     }
     return null;
-  }
-
-  /** Drill into a node by dispatching the right store action. */
-  function drillIntoNode(node: AnyNode): void {
-    const modulePath = typeof node.properties["module_path"] === "string"
-      ? node.properties["module_path"]
-      : activeModulePath ?? "";
-
-    if (node.label === "Module") {
-      const fileName = modulePath.split("/").pop() ?? node.id;
-      drillIntoFile(modulePath, fileName);
-    } else if (node.label === "Class") {
-      drillIntoClass(node.id, modulePath);
-    } else if (node.label === "Function") {
-      drillIntoFunction(node.id, modulePath);
-    }
   }
 
   // ---------------------------------------------------------------------------

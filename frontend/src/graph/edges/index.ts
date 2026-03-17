@@ -11,6 +11,14 @@ import ContainsEdge from "./ContainsEdge";
 import ReturnsEdge from "./ReturnsEdge";
 import FeedsEdge from "./FeedsEdge";
 import NextEdge from "./NextEdge";
+import DependsOnEdge from "./DependsOnEdge";
+import ImplementsEdge from "./ImplementsEdge";
+import ValidatesEdge from "./ValidatesEdge";
+import TransformsEdge from "./TransformsEdge";
+import MemberOfEdge from "./MemberOfEdge";
+import StepOfEdge from "./StepOfEdge";
+import ContainsFlowEdge from "./ContainsFlowEdge";
+import PromotedToEdge from "./PromotedToEdge";
 
 export const edgeTypes: EdgeTypes = {
   CALLS: CallsEdge,
@@ -25,4 +33,12 @@ export const edgeTypes: EdgeTypes = {
   RETURNS: ReturnsEdge,
   FEEDS: FeedsEdge,
   NEXT: NextEdge,
+  DEPENDS_ON: DependsOnEdge,
+  IMPLEMENTS: ImplementsEdge,
+  VALIDATES: ValidatesEdge,
+  TRANSFORMS: TransformsEdge,
+  MEMBER_OF: MemberOfEdge,
+  STEP_OF: StepOfEdge,
+  CONTAINS_FLOW: ContainsFlowEdge,
+  PROMOTED_TO: PromotedToEdge,
 };
