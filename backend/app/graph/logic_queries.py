@@ -704,3 +704,57 @@ UNWIND $lookups AS lk
 OPTIONAL MATCH (n:LogicNode {name: lk.name, module_path: lk.module_path, status: 'active'})
 RETURN lk.name AS name, lk.module_path AS module_path, n.id AS id, n.ast_hash AS ast_hash
 """
+
+# --- Compose: suggestion queries (TICKET-910) ---
+
+FIND_NODES_BY_PARAM_TYPE = """
+MATCH (n:LogicNode)
+WHERE n.status = 'active' AND n.params CONTAINS $type_hint
+RETURN n.id AS id, n.name AS name, n.params AS params,
+       n.signature AS signature, n.return_type AS return_type
+LIMIT $limit
+"""
+
+FIND_NODES_BY_RETURN_TYPE = """
+MATCH (n:LogicNode)
+WHERE n.status = 'active' AND n.return_type = $type_hint
+RETURN n.id AS id, n.name AS name, n.params AS params,
+       n.signature AS signature, n.return_type AS return_type
+LIMIT $limit
+"""
+
+FIND_NODES_BY_PARAM_NAME = """
+MATCH (n:LogicNode)
+WHERE n.status = 'active' AND n.params CONTAINS $param_name
+RETURN n.id AS id, n.name AS name, n.params AS params,
+       n.signature AS signature, n.return_type AS return_type
+LIMIT $limit
+"""
+
+# --- Compose: assembly queries ---
+
+GET_CLASS_FOR_METHOD = """
+MATCH (m:LogicNode {id: $method_id})-[:MEMBER_OF]->(c:LogicNode {kind: 'class'})
+OPTIONAL MATCH (init:LogicNode)-[:MEMBER_OF]->(c)
+WHERE init.name ENDS WITH '.__init__'
+RETURN c.id AS class_id, c.name AS class_name, c.source_text AS class_source,
+       init.id AS init_id, init.params AS init_params
+"""
+
+GET_NODE_DATA_FLOW = """
+MATCH (n:LogicNode {id: $node_id})
+OPTIONAL MATCH (n)-[:ASSIGNS]->(av:Variable)
+OPTIONAL MATCH (n)-[:READS]->(rv:Variable)
+OPTIONAL MATCH (n)-[:RETURNS]->(ret:Variable)
+RETURN collect(DISTINCT {id: av.id, name: av.name, type_hint: av.type_hint, role: 'assigns'}) AS assigns,
+       collect(DISTINCT {id: rv.id, name: rv.name, type_hint: rv.type_hint, role: 'reads'}) AS reads,
+       collect(DISTINCT {id: ret.id, name: ret.name, type_hint: ret.type_hint, role: 'returns'}) AS returns
+"""
+
+# --- Compose: impact analysis for save ---
+
+FIND_CALLERS = """
+MATCH (caller:LogicNode)-[:CALLS]->(n:LogicNode {id: $node_id})
+WHERE caller.status = 'active'
+RETURN caller.id AS id, caller.name AS name
+"""

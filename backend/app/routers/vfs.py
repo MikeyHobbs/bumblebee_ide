@@ -17,6 +17,13 @@ class ProjectRequest(BaseModel):
     output_dir: str = ".bumblebee/vfs"
 
 
+class ProjectModulesRequest(BaseModel):
+    """Request body for projecting specific modules to VFS."""
+
+    module_paths: list[str]
+    output_dir: str = ".bumblebee/vfs"
+
+
 class SyncRequest(BaseModel):
     """Request body for VFS-to-graph sync."""
 
@@ -62,6 +69,24 @@ def get_vfs_node(node_id: str) -> str:
 def project_all(data: ProjectRequest) -> ProjectionReportResponse:
     """Trigger full VFS projection."""
     report = vfs_engine.project_all(data.output_dir)
+    return ProjectionReportResponse(
+        files_written=report.files_written,
+        modules_projected=report.modules_projected,
+        errors=report.errors,
+    )
+
+
+@router.post("/project-modules", response_model=ProjectionReportResponse)
+def project_modules(data: ProjectModulesRequest) -> ProjectionReportResponse:
+    """Project specific modules to VFS files.
+
+    Args:
+        data: List of module paths to project and output directory.
+
+    Returns:
+        Projection report with counts.
+    """
+    report = vfs_engine.project_modules(data.module_paths, data.output_dir)
     return ProjectionReportResponse(
         files_written=report.files_written,
         modules_projected=report.modules_projected,

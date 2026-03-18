@@ -79,3 +79,36 @@ WITH n.structural_hash AS hash, collect(n) AS nodes
 WHERE size(nodes) > 2
 UNWIND nodes AS n
 RETURN n
+
+-- ===========================================================================
+-- VFS projection queries
+-- Prefix with "vfs" to run the query AND project matched modules to
+-- .bumblebee/vfs/. The query results highlight on the graph as usual.
+-- ===========================================================================
+
+-- Project all functions in a specific module to VFS
+vfs MATCH (n:LogicNode {kind: 'function'}) WHERE n.module_path CONTAINS 'main' RETURN n
+
+-- Project a single function and its module
+vfs MATCH (n:LogicNode) WHERE n.name CONTAINS 'parse_file' RETURN n
+
+-- Project all classes and their methods
+vfs MATCH (c:LogicNode {kind: 'class'})<-[:MEMBER_OF]-(m:LogicNode) RETURN c, m
+
+-- Project modules that have cross-file calls (likely integration points)
+vfs MATCH (a:LogicNode)-[:CALLS]->(b:LogicNode) WHERE a.module_path <> b.module_path RETURN a, b LIMIT 20
+
+-- Project functions with high fan-out (complex orchestrators worth inspecting)
+vfs MATCH (n:LogicNode)-[r:CALLS]->() WITH n, count(r) AS calls WHERE calls > 3 RETURN n ORDER BY calls DESC LIMIT 10
+
+-- Project all nodes in the parsing pipeline
+vfs MATCH (n:LogicNode) WHERE n.module_path CONTAINS 'parsing' RETURN n
+
+-- Project functions that mutate variables (side-effect heavy code)
+vfs MATCH (fn:LogicNode)-[:MUTATES]->(v:Variable) RETURN DISTINCT fn
+
+-- Project the full neighbourhood of a specific function
+vfs MATCH (n:LogicNode)-[r]-(neighbor:LogicNode) WHERE n.name CONTAINS 'import_file' RETURN n, neighbor
+
+-- Project all active nodes (full VFS snapshot)
+vfs MATCH (n:LogicNode {status: 'active'}) RETURN n

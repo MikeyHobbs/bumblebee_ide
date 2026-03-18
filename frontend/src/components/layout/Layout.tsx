@@ -6,6 +6,20 @@ import TabBar from "./TabBar";
 import Breadcrumbs from "./Breadcrumbs";
 import { useLayoutStore } from "@/store/layoutStore";
 
+/** Full-screen overlay to capture mouse during drag (prevents canvas/iframe stealing events). */
+function DragOverlay({ cursor }: { cursor: string }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 9999,
+        cursor,
+      }}
+    />
+  );
+}
+
 function HResizeHandle({
   onDrag,
 }: {
@@ -43,30 +57,33 @@ function HResizeHandle({
   );
 
   return (
-    <div
-      className="group w-3 cursor-col-resize flex-shrink-0 flex items-center justify-center"
-      style={{ background: "transparent" }}
-      onMouseDown={handleMouseDown}
-    >
+    <>
+      {active && <DragOverlay cursor="col-resize" />}
       <div
-        className="w-[2px] h-full transition-colors"
-        style={{
-          background: active ? "var(--border-focus)" : "var(--border)",
-        }}
-      />
-      <div
-        className="absolute flex flex-col gap-[3px] opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{ pointerEvents: "none" }}
+        className="group w-3 cursor-col-resize flex-shrink-0 flex items-center justify-center"
+        style={{ background: "transparent", position: "relative", zIndex: 10 }}
+        onMouseDown={handleMouseDown}
       >
-        {[0, 1, 2].map((i) => (
-          <span
-            key={i}
-            className="block w-[3px] h-[3px] rounded-full"
-            style={{ background: active ? "var(--border-focus)" : "var(--text-muted)" }}
-          />
-        ))}
+        <div
+          className="w-[2px] h-full transition-colors"
+          style={{
+            background: active ? "var(--border-focus)" : "var(--border)",
+          }}
+        />
+        <div
+          className="absolute flex flex-col gap-[3px] opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ pointerEvents: "none" }}
+        >
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              className="block w-[3px] h-[3px] rounded-full"
+              style={{ background: active ? "var(--border-focus)" : "var(--text-muted)" }}
+            />
+          ))}
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -107,30 +124,33 @@ function VResizeHandle({
   );
 
   return (
-    <div
-      className="group h-3 cursor-row-resize flex-shrink-0 flex items-center justify-center"
-      style={{ background: "transparent" }}
-      onMouseDown={handleMouseDown}
-    >
+    <>
+      {active && <DragOverlay cursor="row-resize" />}
       <div
-        className="h-[2px] w-full transition-colors"
-        style={{
-          background: active ? "var(--border-focus)" : "var(--border)",
-        }}
-      />
-      <div
-        className="absolute flex flex-row gap-[3px] opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{ pointerEvents: "none" }}
+        className="group h-3 cursor-row-resize flex-shrink-0 flex items-center justify-center"
+        style={{ background: "transparent", position: "relative", zIndex: 10 }}
+        onMouseDown={handleMouseDown}
       >
-        {[0, 1, 2].map((i) => (
-          <span
-            key={i}
-            className="block w-[3px] h-[3px] rounded-full"
-            style={{ background: active ? "var(--border-focus)" : "var(--text-muted)" }}
-          />
-        ))}
+        <div
+          className="h-[2px] w-full transition-colors"
+          style={{
+            background: active ? "var(--border-focus)" : "var(--border)",
+          }}
+        />
+        <div
+          className="absolute flex flex-row gap-[3px] opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ pointerEvents: "none" }}
+        >
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              className="block w-[3px] h-[3px] rounded-full"
+              style={{ background: active ? "var(--border-focus)" : "var(--text-muted)" }}
+            />
+          ))}
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -164,21 +184,23 @@ function Layout() {
   const handleHResize = useCallback(
     (deltaX: number) => {
       if (containerWidth === 0) return;
+      const current = useLayoutStore.getState().graphPanelWidth;
       const pctDelta = (deltaX / containerWidth) * 100;
-      const newGraph = Math.max(20, Math.min(80, graphWidth + pctDelta));
+      const newGraph = Math.max(20, Math.min(80, current + pctDelta));
       setPanelWidth("graph", newGraph);
     },
-    [containerWidth, graphWidth, setPanelWidth],
+    [containerWidth, setPanelWidth],
   );
 
   const handleVResize = useCallback(
     (deltaY: number) => {
       if (containerHeight === 0) return;
+      const current = useLayoutStore.getState().topRowHeight;
       const pctDelta = (deltaY / containerHeight) * 100;
-      const newTop = Math.max(20, Math.min(85, topRowHeight + pctDelta));
+      const newTop = Math.max(20, Math.min(85, current + pctDelta));
       setTopRowHeight(newTop);
     },
-    [containerHeight, topRowHeight, setTopRowHeight],
+    [containerHeight, setTopRowHeight],
   );
 
   const graphCollapsed = collapsedPanels.has("graph");

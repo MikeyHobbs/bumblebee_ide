@@ -1,10 +1,12 @@
 import { useRef, useCallback, useEffect, useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEditorStore } from "@/store/editorStore";
 import { useGraphStore } from "@/store/graphStore";
-import { getOrCreateNodeModel } from "@/editor/ModelManager";
+import { getOrCreateNodeModel, getOrCreateTabModel } from "@/editor/ModelManager";
 import ExternalRefsPanel from "../panels/ExternalRefsPanel";
+import { apiFetch } from "@/api/client";
 
 interface GraphNodeResponse {
   id: string;
@@ -20,11 +22,18 @@ function localName(qualifiedName: string): string {
 }
 
 function CodeEditor() {
-  const activeNodeView = useEditorStore((s) => s.activeNodeView);
+  const activeTab = useEditorStore((s) => {
+    const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    return tab ?? null;
+  });
   const setCursorPosition = useEditorStore((s) => s.setCursorPosition);
+  const queryClient = useQueryClient();
+  const queryClientRef = useRef(queryClient);
+  queryClientRef.current = queryClient;
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
   const [editorReady, setEditorReady] = useState(false);
+  const contentListenerRef = useRef<Monaco.IDisposable | null>(null);
 
   const handleMount: OnMount = useCallback(
     (editor, monaco) => {
@@ -60,6 +69,15 @@ function CodeEditor() {
         },
       });
       monaco.editor.setTheme("bumblebee-dark");
+
+      // Cmd+S: save active tab
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+        const state = useEditorStore.getState();
+        const tab = state.tabs.find((t) => t.id === state.activeTabId);
+        if (tab) {
+          window.dispatchEvent(new CustomEvent("bumblebee:save-tab", { detail: { tabId: tab.id } }));
+        }
+      });
 
       // Cmd+Click / Ctrl+Click: resolve symbol to graph node and navigate
       if (!definitionProviderRegistered) {
@@ -143,18 +161,112 @@ function CodeEditor() {
     [setCursorPosition],
   );
 
-  // Set Monaco model when activeNodeView changes
+  // Set Monaco model when activeTab changes
   useEffect(() => {
-    if (!activeNodeView || !monacoRef.current || !editorRef.current) return;
-    const model = getOrCreateNodeModel(
-      monacoRef.current,
-      activeNodeView.nodeId,
-      activeNodeView.sourceText,
-      activeNodeView.modulePath,
-    );
+    if (!activeTab || !monacoRef.current || !editorRef.current) return;
+
+    // Dispose previous content listener
+    contentListenerRef.current?.dispose();
+
+    let model: Monaco.editor.ITextModel;
+    if (activeTab.nodeId) {
+      model = getOrCreateNodeModel(
+        monacoRef.current,
+        activeTab.nodeId,
+        activeTab.content,
+        activeTab.modulePath,
+      );
+    } else {
+      model = getOrCreateTabModel(
+        monacoRef.current,
+        activeTab.id,
+        activeTab.content,
+        activeTab.language,
+      );
+    }
     editorRef.current.setModel(model);
     editorRef.current.revealLineInCenter(1);
-  }, [activeNodeView, editorReady]);
+
+    // Listen for content changes and sync to store
+    contentListenerRef.current = editorRef.current.onDidChangeModelContent(() => {
+      const state = useEditorStore.getState();
+      const currentTabId = state.activeTabId;
+      if (currentTabId) {
+        const value = editorRef.current?.getModel()?.getValue() ?? "";
+        state.updateTabContent(currentTabId, value);
+      }
+    });
+  }, [activeTab?.id, activeTab?.nodeId, editorReady]);
+
+  // Handle Cmd+S save via custom event
+  useEffect(() => {
+    const handler = async (e: Event) => {
+      const tabId = (e as CustomEvent).detail?.tabId;
+      if (!tabId) return;
+      const state = useEditorStore.getState();
+      const tab = state.tabs.find((t) => t.id === tabId);
+      if (!tab) return;
+
+      if (tab.nodeId) {
+        // Save existing node
+        try {
+          const res = await apiFetch<{
+            updated_node: { id: string };
+            impacted_nodes: Array<{ id: string; name: string; reason: string }>;
+          }>("/api/v1/compose/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ node_id: tab.nodeId, source: tab.content }),
+          });
+          useEditorStore.getState().markClean(tabId);
+          if (res.impacted_nodes.length > 0) {
+            useGraphStore.getState().setImpactedNodes(res.impacted_nodes.map((n) => n.id));
+          }
+        } catch (err) {
+          console.error("Save failed:", err);
+        }
+      } else {
+        // Parse compose buffer
+        try {
+          const res = await apiFetch<{
+            report: { nodes_created: number };
+            nodes: Array<{ id: string; name: string }>;
+          }>("/api/v1/compose/parse", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: tab.content, module_path: tab.modulePath }),
+          });
+          useEditorStore.getState().markClean(tabId);
+
+          // Update tab with the first created node
+          if (res.nodes.length > 0) {
+            const node = res.nodes[0]!;
+            const shortName = node.name.split(".").pop() ?? node.name;
+            useEditorStore.getState().updateTab(tabId, {
+              nodeId: node.id,
+              label: shortName,
+            });
+
+            // Force refetch graph overview so the new node appears in graphology,
+            // then navigate/highlight once the data is available
+            await queryClientRef.current.invalidateQueries({ queryKey: ["graph-overview"] });
+            await queryClientRef.current.refetchQueries({ queryKey: ["graph-overview"] });
+
+            // Small delay to let React render the incremental sync effect
+            setTimeout(() => {
+              useGraphStore.getState().navigateToNode(node.id, shortName);
+              useGraphStore.getState().highlightNodes(res.nodes.map((n) => n.id));
+            }, 300);
+          }
+        } catch (err) {
+          console.error("Parse failed:", err);
+        }
+      }
+    };
+
+    window.addEventListener("bumblebee:save-tab", handler);
+    return () => window.removeEventListener("bumblebee:save-tab", handler);
+  }, []);
 
   // Graph → Editor highlight decorations
   const highlightedLines = useEditorStore((s) => s.highlightedLines);
@@ -184,13 +296,13 @@ function CodeEditor() {
     }
   }, [highlightedLines]);
 
-  if (!activeNodeView) {
+  if (!activeTab) {
     return (
       <div
         className="flex items-center justify-center h-full text-sm"
         style={{ color: "var(--text-muted)" }}
       >
-        Click a graph node to view its source
+        Click a graph node or press + to start editing
       </div>
     );
   }
@@ -218,7 +330,7 @@ function CodeEditor() {
             overviewRulerLanes: 0,
             hideCursorInOverviewRuler: true,
             overviewRulerBorder: false,
-            readOnly: true,
+            readOnly: false,
             scrollbar: {
               verticalScrollbarSize: 6,
               horizontalScrollbarSize: 6,
@@ -226,7 +338,7 @@ function CodeEditor() {
           }}
         />
       </div>
-      <ExternalRefsPanel nodeId={activeNodeView.nodeId} />
+      {activeTab.nodeId && <ExternalRefsPanel nodeId={activeTab.nodeId} />}
     </div>
   );
 }

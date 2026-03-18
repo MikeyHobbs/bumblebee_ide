@@ -1,23 +1,30 @@
-import { ArrowLeft, X } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import { useEditorStore } from "@/store/editorStore";
+import type { EditorTab } from "@/store/editorStore";
 
 function TabBar() {
-  const activeNodeView = useEditorStore((s) => s.activeNodeView);
-  const nodeViewHistory = useEditorStore((s) => s.nodeViewHistory);
-  const goBackNode = useEditorStore((s) => s.goBackNode);
-  const clearNodeView = useEditorStore((s) => s.clearNodeView);
+  const tabs = useEditorStore((s) => s.tabs);
+  const activeTabId = useEditorStore((s) => s.activeTabId);
+  const setActiveTab = useEditorStore((s) => s.setActiveTab);
+  const closeTab = useEditorStore((s) => s.closeTab);
+  const openTab = useEditorStore((s) => s.openTab);
 
-  if (!activeNodeView) {
-    return (
-      <div
-        className="h-8 border-b"
-        style={{
-          background: "var(--bg-secondary)",
-          borderColor: "var(--border)",
-        }}
-      />
-    );
-  }
+  const handleNewTab = () => {
+    const id = crypto.randomUUID();
+    const tab: EditorTab = {
+      id,
+      label: "Untitled",
+      nodeId: null,
+      modulePath: `__compose__.${id}`,
+      content: "",
+      language: "python",
+      sourceNodeIds: [],
+      flowId: null,
+      gaps: null,
+      isDirty: false,
+    };
+    openTab(tab);
+  };
 
   return (
     <div
@@ -27,73 +34,54 @@ function TabBar() {
         borderColor: "var(--border)",
       }}
     >
-      {nodeViewHistory.length > 0 && (
-        <button
-          onClick={goBackNode}
-          className="flex items-center px-2 h-full"
-          style={{
-            background: "none",
-            border: "none",
-            borderRight: "1px solid var(--border)",
-            cursor: "pointer",
-            color: "var(--text-secondary)",
-          }}
-          title="Go back"
-        >
-          <ArrowLeft size={14} />
-        </button>
-      )}
-      {/* History breadcrumb */}
-      {nodeViewHistory.map((view, i) => (
-        <button
-          key={`${view.nodeId}-${i}`}
-          onClick={() => {
-            // Navigate back to this point in history
-            const store = useEditorStore.getState();
-            const stepsBack = nodeViewHistory.length - i;
-            for (let s = 0; s < stepsBack; s++) {
-              store.goBackNode();
-            }
-          }}
-          className="flex items-center px-3 h-full text-xs font-mono border-r"
-          style={{
-            background: "var(--bg-secondary)",
-            borderColor: "var(--border)",
-            color: "var(--text-muted)",
-            cursor: "pointer",
-          }}
-        >
-          {view.name}
-        </button>
-      ))}
-      {/* Active node tab */}
-      <div
-        className="flex items-center gap-1 px-3 h-full text-xs font-mono border-r"
+      {tabs.map((tab) => {
+        const isActive = tab.id === activeTabId;
+        return (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className="flex items-center gap-1 px-3 h-full text-xs font-mono border-r shrink-0"
+            style={{
+              background: isActive ? "var(--bg-primary)" : "var(--bg-secondary)",
+              borderColor: "var(--border)",
+              borderBottom: isActive ? "1px solid var(--bg-primary)" : "none",
+              color: isActive ? "var(--text-primary)" : "var(--text-muted)",
+              cursor: "pointer",
+            }}
+          >
+            {tab.isDirty && (
+              <span
+                className="w-1.5 h-1.5 rounded-full shrink-0"
+                style={{ background: "#f59e0b" }}
+              />
+            )}
+            <span>{tab.nodeId ? tab.label : tab.label || "Untitled"}</span>
+            <span
+              onClick={(e) => {
+                e.stopPropagation();
+                closeTab(tab.id);
+              }}
+              className="ml-1 opacity-50 hover:opacity-100"
+              style={{ background: "none", border: "none", cursor: "pointer", color: "inherit" }}
+            >
+              <X size={12} />
+            </span>
+          </button>
+        );
+      })}
+      <button
+        onClick={handleNewTab}
+        className="flex items-center justify-center w-8 h-full shrink-0"
         style={{
-          background: "var(--bg-primary)",
-          borderColor: "var(--border)",
-          color: "var(--text-primary)",
-          borderBottom: "1px solid var(--bg-primary)",
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          color: "var(--text-muted)",
         }}
+        title="New compose tab"
       >
-        <span
-          className="text-[10px] uppercase mr-1"
-          style={{ color: "var(--text-muted)" }}
-        >
-          {activeNodeView.kind}
-        </span>
-        <span>{activeNodeView.name}</span>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            clearNodeView();
-          }}
-          className="ml-1 opacity-50 hover:opacity-100"
-          style={{ background: "none", border: "none", cursor: "pointer", color: "inherit" }}
-        >
-          <X size={12} />
-        </button>
-      </div>
+        <Plus size={14} />
+      </button>
     </div>
   );
 }

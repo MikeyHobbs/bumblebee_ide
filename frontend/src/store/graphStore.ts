@@ -63,6 +63,11 @@ interface GraphState {
 
   // Diff
   setActiveDiff: (diff: SemanticDiff | null) => void;
+
+  // Impact analysis (compose save)
+  impactedNodeIds: Set<string>;
+  setImpactedNodes: (nodeIds: string[]) => void;
+  clearImpactedNodes: () => void;
 }
 
 export const useGraphStore = create<GraphState>((set) => ({
@@ -218,4 +223,12 @@ export const useGraphStore = create<GraphState>((set) => ({
     }),
 
   setActiveDiff: (diff) => set({ activeDiff: diff }),
+
+  impactedNodeIds: new Set<string>(),
+  setImpactedNodes: (nodeIds) => set({ impactedNodeIds: new Set(nodeIds) }),
+  clearImpactedNodes: () =>
+    set((state) => {
+      if (state.impactedNodeIds.size === 0) return state;
+      return { impactedNodeIds: new Set<string>() };
+    }),
 }));

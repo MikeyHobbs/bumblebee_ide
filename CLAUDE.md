@@ -9,7 +9,7 @@ Bumblebee IDE is a **Visual Logic Engine** that treats codebases as living graph
 ## Tech Stack
 
 - **Backend:** Python 3.12, FastAPI, FalkorDB (graph DB with GraphBLAS engine), tree-sitter (AST parsing), watchdog (file system watcher)
-- **Frontend:** Vite, React 18, TypeScript (strict), React Flow v12 (graph canvas), @monaco-editor/react, Zustand (state), Tailwind CSS v4 (styling), TanStack Query v5, D3-force + dagre (layout)
+- **Frontend:** Vite, React 18, TypeScript (strict), Sigma.js + graphology (knowledge-graph canvas), @monaco-editor/react, Zustand (state), Tailwind CSS v4 (styling), TanStack Query v5, ForceAtlas2 (layout)
 - **LLM Runtime:** Ollama (default model: `qwen2.5-coder:7b`), OpenAI-compatible tool-use format
 - **Config:** Pydantic Settings v2 + `.env` file (see `backend/app/config.py`)
 - **Infrastructure:** Docker Compose (FalkorDB with optimized memory settings)
@@ -22,7 +22,7 @@ Bumblebee IDE is a **Visual Logic Engine** that treats codebases as living graph
 backend/
     app/
         main.py            # FastAPI entrypoint
-        routers/           # API route modules
+        routers/           # API route modules (compose.py, vfs.py, etc.)
         services/          # Business logic (organized by domain)
             parsing/       # AST extraction pipeline (ast_parser, extractors)
             persistence/   # Graph ↔ disk (serializer, deserializer, vfs_engine, import_pipeline)
@@ -31,7 +31,7 @@ backend/
             agent/         # LLM / tool-use (model_adapter, agent_tools_v2, tool_executor)
             analysis/      # Diffing, gaps, hashing (semantic_diff, gap_analysis, hash_identity)
             watchers/      # File system monitoring (file_watcher, bumblebee_watcher)
-        models/            # Pydantic schemas & DB models
+        models/            # Pydantic schemas & DB models (compose_models.py, etc.)
         graph/             # FalkorDB queries & Logic Pack builders
         utils/             # Reusable utilities
     tests/
@@ -43,7 +43,7 @@ frontend/
         components/        # UI components (organized by role)
             canvas/        # Graph visualization (AtlasOverview, GraphCanvas)
             panels/        # Side panels (CallContextSidebar, LogicPackPanel, SemanticDiff, etc.)
-            editor/        # Code editing (CodeEditor, FunctionFlowView)
+            editor/        # Code editing (CodeEditor, FunctionFlowView, ModelManager.ts)
             chat/          # AI chat (TerminalChat)
             layout/        # App shell (Layout, TabBar, Breadcrumbs)
             pages/         # Full pages (LandingPage)
@@ -106,7 +106,9 @@ make test      # test backend
 All architecture decisions are documented in `docs/decisions.md`. Graph schema is in `docs/schema.md`. Key points:
 
 - **Build order (800-series):** Phase 0 (foundation) → Phase 1 (CRUD) → Phase 3 (import) → Phase 2 (serialization) → Phase 4 (VFS) → Phase 5 (flows) → Phase 6 (frontend) → Phase 7 (agent). See `docs/tickets.md` for details.
-- **React Flow v12** — not v11, not Cytoscape. Custom node/edge types are React components.
+- **Sigma.js** — replaced React Flow for knowledge-graph view. Uses graphology + ForceAtlas2 worker. Incremental graph sync (no full rebuild on node add/remove).
+- **Compose editor** — multi-tab Monaco surface with Cmd+S parse/save to graph. Compose buffers use `__compose__.{tabId}` as module_path.
+- **VFS query** — `vfs MATCH ...` in TerminalChat runs Cypher, opens matched functions in a compose tab, and projects modules to `.bumblebee/vfs/`.
 - **Ollama** for local LLM with OpenAI-compatible tool-use format. Cloud fallback via `ModelAdapter` interface.
 - **Pydantic Settings v2** for all config. Import `settings` from `app.config`. Never read `os.environ` directly.
 - **FalkorDB** singleton client via FastAPI lifespan. Graph name: `bumblebee`.

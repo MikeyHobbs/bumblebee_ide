@@ -98,6 +98,42 @@ export function disposeNodeModel(nodeId: string): void {
   nodeModels.delete(nodeId);
 }
 
+// --- Compose tab models ---
+
+const tabModels = new Map<string, Monaco.editor.ITextModel>();
+
+export function getOrCreateTabModel(
+  monaco: typeof Monaco,
+  tabId: string,
+  content: string,
+  language: string,
+): Monaco.editor.ITextModel {
+  const existing = tabModels.get(tabId);
+  if (existing && !existing.isDisposed()) {
+    if (existing.getValue() !== content) {
+      existing.setValue(content);
+    }
+    return existing;
+  }
+
+  const uri = monaco.Uri.parse(`bumblebee://compose/${tabId}`);
+  const existingByUri = monaco.editor.getModel(uri);
+  if (existingByUri) {
+    tabModels.set(tabId, existingByUri);
+    return existingByUri;
+  }
+
+  const model = monaco.editor.createModel(content, language, uri);
+  tabModels.set(tabId, model);
+  return model;
+}
+
+export function disposeTabModel(tabId: string): void {
+  const model = tabModels.get(tabId);
+  if (model && !model.isDisposed()) model.dispose();
+  tabModels.delete(tabId);
+}
+
 export function disposeModel(path: string): void {
   const model = models.get(path);
   if (model && !model.isDisposed()) {

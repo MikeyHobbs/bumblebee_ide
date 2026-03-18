@@ -492,3 +492,77 @@ Phase 0 (foundation: 800-802) ─┬─ Phase 1 (CRUD: 810-813) ─┬─ Phase 
 Phase 8 (docs) → Phase 0 → Phase 1 → Phase 3 → Phase 2 → Phase 4 → Phase 5 → Phase 6 → Phase 7
 
 See `docs/tickets.md` for the full 800-series backlog with acceptance criteria.
+
+---
+
+## 12. VFS Compose & Virtual Script Architecture (900-Series)
+
+See `docs/vfs_compose_plan.md` for the full design document.
+
+### 12.1 Multi-Tab Editor — All Tabs Are Writable
+
+**Decision: The editor becomes a multi-tab system. Every tab is writable. There is no read-only mode.**
+
+| Tab Origin | Behavior |
+|------------|----------|
+| Clicked a graph node | Opens existing LogicNode source, editable. Save → update LogicNode → impact analysis → highlight breaking functions in red. |
+| Created new ("+") | Empty editor. Live sync creates new LogicNodes as you type. |
+| Assembled from query | Pre-populated with assembled script. Same live sync + suggestions. |
+
+- **Why no read-only:** The user wants to click a node, edit it, save, and immediately see graph impact. A read-only → edit mode toggle adds friction without value. The graph is the source of truth, so editing code *is* editing the graph — make that direct.
+- **Impact on save:** When editing an existing LogicNode, saving triggers the `IMPACT_ANALYSIS` Cypher query. Functions that would break (downstream READS of mutated variables, signature changes affecting callers) are highlighted in red on the graph canvas. This makes consequences visible immediately.
+- **Backward compatibility:** `openNodeView()` opens an existing node's tab (now editable). All existing graph-click-to-editor navigation is unchanged — it just lands on a writable surface.
+
+### 12.2 Live Compose Sync Pipeline
+
+**Decision: Compose tabs sync to the graph via the same `parse_file()` + `import_file()` pipeline as batch import, debounced at 500ms.**
+
+- **Why same pipeline:** A separate "live" codepath would diverge from batch import over time, producing inconsistent graph state. One pipeline, two entry points.
+- **Why 500ms debounce:** Fast enough to feel responsive, slow enough to avoid overwhelming the graph with partial parse states. Tree-sitter parsing is < 10ms for typical function-sized snippets.
+- **Module path convention:** Compose tabs use `__compose__.{tab_id}` as `module_path` to distinguish compose-authored nodes from imported code.
+
+### 12.3 Deterministic Suggestions + LLM Judge
+
+**Decision: Function suggestions use deterministic graph queries first. LLM evaluates compatibility as an additive layer.**
+
+The suggestion pipeline is two-tier:
+
+| Tier | Mechanism | When |
+|------|-----------|------|
+| 1 (v1) | Cypher queries on Variable nodes + LogicNode params/return_type | Always runs |
+| 2 (future) | LLM evaluates partial matches, explains gaps, suggests bridges | Additive, optional |
+
+- **Why deterministic first:** Fast, reproducible, no LLM dependency. Works offline. Covers the common case where types match exactly.
+- **Why LLM judge:** Real codebases have partial matches (3 of 4 params available), type aliases, implicit conversions, and naming inconsistencies. The LLM adds value by explaining *why* a function is almost usable and *how* to bridge the gap — but it never fabricates variables or data to fill gaps. It operates through graph queries (agent tools), not around them.
+- **Future: Batch type inference.** Use LLM to strongly type and normalize variable names across a codebase, improving deterministic suggestion quality.
+
+### 12.4 Virtual Script Assembly
+
+**Decision: Script assembly is deterministic codegen from graph data-flow analysis. LLM reviews the result.**
+
+The assembler:
+1. Fetches selected LogicNodes.
+2. Queries their Variable edges (ASSIGNS/READS/RETURNS).
+3. Builds a data-flow dependency graph between selected nodes.
+4. Topological sorts them.
+5. Generates imports (from DEPENDS_ON edges), class instantiations (for methods with `self`), and wired function calls.
+6. Identifies gaps: variables needed but not produced.
+
+- **Why deterministic first:** The graph already knows inputs/outputs. No need for an LLM to guess what connects to what — the edges tell us.
+- **Why gaps, not fabrication:** When a variable is needed but no selected node produces it, the assembler emits a `# GAP:` comment. This is honest — the user or LLM must resolve the gap, not sweep it under fabricated code.
+- **Method context:** When a method has `self`, follow `MEMBER_OF` → class + `__init__` params. This is the minimum to make method references usable without pulling entire class hierarchies.
+
+### 12.5 Flows as Ad-Hoc Explorations
+
+**Decision: Virtual scripts are ad-hoc explorations that can optionally be saved as Flows.**
+
+- **Why ad-hoc:** Not every script assembly should become a permanent graph entity. Users explore first, commit when satisfied.
+- **Why save as Flow:** The existing Flow model (STEP_OF edges, composable hierarchy, promotable to `flow_function`) is the natural persistence layer. A saved virtual script becomes queryable — if someone's question is answered by an existing Flow, no need to rebuild.
+- **Flow reuse:** Query existing Flows before assembling. If a Flow matches the user's intent, surface it directly.
+
+### 12.6 Compose Lens (Graph Filtering)
+
+**Decision: When a compose tab is active, the Atlas graph view fades non-relevant nodes. No second graph view.**
+
+- **Why not a second view:** Maintaining two graph renderers doubles complexity. A lens on the single view is simpler and lets users toggle between focused (compose) and full (explore) modes naturally.
+- **Implementation:** Reuse the existing `nodeReducer`/`edgeReducer` pattern from query result highlighting. A `composeContextNodeIds` set drives the lens.

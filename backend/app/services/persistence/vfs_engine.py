@@ -87,6 +87,39 @@ def project_node(node_id: str) -> str:
     return props.get("source_text", "")
 
 
+def project_modules(module_paths: list[str], output_dir: str = ".bumblebee/vfs") -> ProjectionReport:
+    """Project specific modules to the VFS directory.
+
+    Args:
+        module_paths: List of module paths to project.
+        output_dir: Path to the VFS output directory.
+
+    Returns:
+        ProjectionReport with counts.
+    """
+    report = ProjectionReport()
+    base = Path(output_dir)
+
+    for mod_path in module_paths:
+        if not mod_path:
+            continue
+        try:
+            source = project_module(mod_path)
+            if not source.strip():
+                continue
+
+            file_path = base / (mod_path.replace(".", "/") + ".py")
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(source, encoding="utf-8")
+            report.files_written += 1
+            report.modules_projected += 1
+        except Exception as exc:
+            report.errors.append(f"Error projecting {mod_path}: {exc}")
+
+    logger.info("VFS projected %d of %d requested modules", report.modules_projected, len(module_paths))
+    return report
+
+
 def project_all(output_dir: str) -> ProjectionReport:
     """Project all modules to `.bumblebee/vfs/` directory.
 

@@ -724,27 +724,16 @@ Double-click a variable node to highlight its full data-flow path through the gr
 
 ---
 
-## TICKET-702: Graph-Aware Function Editor Pane
+## TICKET-702: Graph-Aware Function Editor Pane — SUPERSEDED BY 900-SERIES
 
-**Priority:** Backlog
-**Area:** Frontend + Backend
-
-Open a new Monaco editor pane for authoring functions that integrate directly with the graph:
-
-1. New Monaco pane (separate from the node source viewer) for writing new functions
-2. New functions auto-import into the graph as they're defined
-3. Fetch/browse existing functions from the graph to use in the editor
-4. Compose new functions by pulling in existing graph functions as building blocks
-
-**Starting points:**
-- Frontend: `@monaco-editor/react`, existing node source fetch (`/api/v1/nodes/:id`)
-- Backend: endpoint to register new functions into the graph, search endpoint for graph functions
+**Status:** Superseded by TICKET-900 through TICKET-922 (Compose Tab).
+See Phase 9-11 in the 900-series for the full implementation plan.
 
 ---
 
-## TICKET-703: Cypher Query Graph Filter
+## TICKET-703: Cypher Query Graph Filter — PARTIALLY COVERED BY 900-SERIES
 
-**Priority:** Backlog
+**Priority:** Backlog (selection mechanism feeds into TICKET-940)
 **Area:** Frontend + Backend
 
 Run Cypher queries against FalkorDB and filter/highlight the Atlas graph view to show only matching results:
@@ -753,6 +742,7 @@ Run Cypher queries against FalkorDB and filter/highlight the Atlas graph view to
 2. Backend endpoint that proxies Cypher to FalkorDB and returns matching node/edge IDs
 3. Frontend filters the Sigma view to show/highlight matches (dim non-matches)
 4. Enables ad-hoc exploration: "show all functions that call X", "show all classes inheriting from Y"
+5. **900-series integration:** Query results become the selection mechanism for virtual script assembly (TICKET-940). Highlighted nodes → "Assemble" button → virtual script tab.
 
 **Starting points:**
 - Frontend: `nodeReducer`/`edgeReducer` pattern in `AtlasOverview.tsx` (same as trace dimming)
@@ -769,6 +759,508 @@ queries and when building
 
 THIS TICKET IS IN DEVELOPMENT AND NEEDS FLESHING OUT
 
+
+---
+
+# 900-Series: VFS Compose & Virtual Script
+
+> **Core principle:** The graph becomes a live, editable surface. Users author new logic (Compose Tab) and assemble existing logic (Virtual Script View) through the same editor. Deterministic graph queries drive suggestions; LLM judges compatibility.
+
+See `docs/vfs_compose_plan.md` for the full design document.
+
+---
+
+## Phase 9: Editor Tab System (Foundation)
+
+### TICKET-900: Refactor editorStore to Multi-Tab Architecture
+
+**File:** `frontend/src/store/editorStore.ts`
+
+**Goal:** Replace single-view editor state with a multi-tab system. All tabs are writable.
+
+**Tasks:**
+- Define `EditorTab` type with fields for all origins:
+  - `id: string` (UUID)
+  - `label: string`
+  - `nodeId: string | null` — set when opened from a graph node (editing existing LogicNode)
+  - `modulePath: string` — module path for the tab's content
+  - `content: string` — editor content
+  - `language: string`
+  - `parseResult: ComposeParseResult | null` — latest parse result
+  - `sourceNodeIds: string[]` — node IDs (for assembled content or parsed content)
+  - `flowId: string | null` — if saved as a Flow
+  - `gaps: Gap[] | null` — missing variables from assembly
+  - `isDirty: boolean` — unsaved changes to an existing node
+- Replace `activeNodeView` + `nodeViewHistory` with `tabs: EditorTab[]` + `activeTabId: string | null`.
+- Implement actions: `openTab`, `closeTab`, `setActiveTab`, `updateTabContent`, `setComposeResult`, `setAssemblyResult`, `markDirty`, `markClean`.
+- `openNodeView(view)` opens an existing node's source in an editable tab (creates/reuses tab with matching `nodeId`).
+- A tab can start empty ("+"), from a graph node click, or pre-populated via assembly. All are the same editable surface.
+
+**Acceptance Criteria:**
+- Clicking a graph node opens an editable tab with the node's source.
+- Editing and saving an existing node updates the LogicNode in the graph.
+- "+" creates a new empty tab for authoring from scratch.
+- Multiple tabs can be open simultaneously.
+- Tab state persists across tab switches.
+- `npm run typecheck` passes.
+
+---
+
+### TICKET-901: Update TabBar for Multi-Tab Rendering
+
+**File:** `frontend/src/components/layout/TabBar.tsx`
+
+**Goal:** Replace history breadcrumb with a real multi-tab bar.
+
+**Tasks:**
+- Render each tab from `editorStore.tabs` as a clickable pill.
+- Active tab gets highlight styling.
+- Close button on each tab.
+- Dirty indicator (dot) on tabs with unsaved changes to existing nodes.
+- "+" button to create a new empty compose tab.
+- Tabs show: node name (if opened from graph), "Untitled" (if new), or assembled flow name.
+- Support tab overflow (horizontal scroll or dropdown).
+
+**Acceptance Criteria:**
+- Tabs are clickable and closable.
+- Dirty indicator shows when an existing node has been modified.
+- "+" button creates a new tab and switches to it.
+- TabBar renders correctly with 1-10+ tabs.
+
+---
+
+### TICKET-902: CodeEditor Supports Writable Tabs
+
+**Files:** `frontend/src/components/editor/CodeEditor.tsx`, `frontend/src/editor/ModelManager.ts`
+
+**Goal:** Make Monaco always writable and support multiple tab models.
+
+**Tasks:**
+- CodeEditor reads `activeTab` from `editorStore` instead of `activeNodeView`.
+- All tabs are writable. Remove `readOnly: true` from Monaco options.
+- URI scheme: `bumblebee://node/{nodeId}` for existing nodes, `bumblebee://compose/{tabId}` for new/assembled content.
+- Register `onDidChangeModelContent` → `updateTabContent` + `markDirty` on all tabs.
+- ModelManager: add `getOrCreateTabModel(tabId, content, language)`, `disposeTabModel(tabId)`.
+
+**Acceptance Criteria:**
+- Typing in a compose tab updates content live.
+- Switching between tabs preserves content and cursor position.
+- Node-view tabs remain read-only.
+- Monaco models are properly disposed when tabs are closed.
+
+---
+
+### TICKET-903: Layout Verification for Tab System
+
+**File:** `frontend/src/components/layout/Layout.tsx`
+
+**Goal:** Verify layout panels work correctly with the new tab system.
+
+**Tasks:**
+- Verify panel collapse/expand works with all tab kinds.
+- ExternalRefsPanel only renders for `node-view` tabs.
+- ComposeSuggestionsPanel renders for `compose` tabs (TICKET-921).
+
+**Acceptance Criteria:**
+- No visual regressions. All panel interactions work.
+
+---
+
+## Phase 10: Compose Tab — Backend
+
+### TICKET-910: Cypher Queries for Variable/Type Matching — DONE
+
+**File:** `backend/app/graph/logic_queries.py`
+
+**Goal:** Add Cypher templates for finding LogicNodes by parameter type, return type, and parameter name.
+
+**Tasks:**
+- `FIND_NODES_BY_PARAM_TYPE`: Match active LogicNodes whose `params` JSON contains a given type hint.
+- `FIND_NODES_BY_RETURN_TYPE`: Match active LogicNodes with a given `return_type`.
+- `FIND_NODES_BY_PARAM_NAME`: Match active LogicNodes whose `params` JSON contains a given param name.
+
+**Acceptance Criteria:**
+- `FIND_NODES_BY_PARAM_TYPE` with `"str"` returns functions that accept `str` parameters.
+- `FIND_NODES_BY_RETURN_TYPE` with `"bool"` returns functions returning `bool`.
+- Queries are parameterized (no string interpolation). Results are limited.
+
+---
+
+### TICKET-911: Suggestion Service (Deterministic)
+
+**File:** `backend/app/services/compose/suggestion_service.py`
+
+**Goal:** Given a set of variables (from a parse), find LogicNodes whose params or return types match.
+
+**Tasks:**
+- `get_suggestions(variables: list[VariableNode]) -> list[Suggestion]`:
+  - For each variable with `type_hint`: query `FIND_NODES_BY_PARAM_TYPE` + `FIND_NODES_BY_RETURN_TYPE`.
+  - For each variable without `type_hint`: query `FIND_NODES_BY_PARAM_NAME`.
+  - Parse the JSON `params` field in Python for precise matching (Cypher `CONTAINS` is a fast pre-filter).
+  - Deduplicate, rank: exact type match > partial type match > name match.
+- Return: `[{ variable_name, type_hint, matching_nodes: [{ id, name, signature, match_reason }] }]`.
+
+**Acceptance Criteria:**
+- Given a `config: Config` variable, finds functions that accept `Config` as a parameter.
+- Given a `result: str` variable, finds functions that return `str`.
+- No LLM calls. Purely deterministic.
+
+---
+
+### TICKET-912: POST /api/v1/compose/parse Endpoint — DONE
+
+**File:** `backend/app/routers/compose.py`
+
+**Goal:** Receive editor content, parse it, upsert into the graph, and return suggestions.
+
+**Tasks:**
+- Accept `{ source: string, module_path: string }`.
+- Call `parse_file(source, module_path)` — same tree-sitter parser as batch import.
+- Call `import_file(module_path, source)` — same import pipeline. Produces identical graph result.
+- Collect created `node_ids` and `variable_ids`.
+- Call suggestion service on extracted variables.
+- Broadcast `graph:updated` over WebSocket.
+- Return `{ report, node_ids, variable_ids, suggestions }`.
+- Compose modules use `__compose__.{tab_id}` as `module_path`.
+- Register router in `main.py`.
+
+**Acceptance Criteria:**
+- Posting a Python function creates a LogicNode in the graph with correct kind, params, return_type.
+- Re-posting the same source is idempotent (hash match → no change).
+- Suggestions are returned alongside parse results.
+- WebSocket `graph:updated` event fires after successful parse.
+
+---
+
+### TICKET-913: Save & Impact Analysis (Edit Existing Node) — DONE
+
+**Files:** `backend/app/routers/compose.py`, `frontend/src/store/graphStore.ts`, `frontend/src/components/canvas/AtlasOverview.tsx`
+
+**Goal:** When a user edits an existing LogicNode and saves, update the graph and highlight affected downstream functions.
+
+**Tasks:**
+- Backend: `POST /api/v1/compose/save` endpoint.
+  - Accept `{ node_id: string, source: string }`.
+  - Update the LogicNode in FalkorDB via `logic_node_service.update_node()` (recompute hash, re-extract variables).
+  - **No filesystem writes.** This updates the graph only. VFS projection is a separate on-demand operation.
+  - Run `IMPACT_ANALYSIS` query on the updated node.
+  - Detect signature changes (params/return_type) → find all CALLS edges pointing at this node → those callers are potentially broken.
+  - Return `{ updated_node, impacted_nodes: [{ id, name, reason }] }`.
+  - Broadcast `graph:updated` + `node:pulse` over WebSocket.
+- Frontend: on save (Cmd+S), call save endpoint.
+  - On success: mark tab clean, update `impactedNodeIds` in graphStore.
+  - In `nodeReducer`: impacted nodes get red highlight with pulsing animation.
+  - Impact highlights auto-clear after 10 seconds or on next user action.
+
+**Acceptance Criteria:**
+- Editing a function's signature and saving highlights all callers in red on the graph.
+- Editing only the body (no signature change) shows impact on downstream READS consumers.
+- Impact highlights are visually distinct (red, pulsing) and temporary.
+- Tab dirty indicator clears on save.
+
+---
+
+## Phase 11: Compose Tab — Frontend
+
+### TICKET-920: Compose Sync Hook
+
+**Files:** `frontend/src/hooks/useComposeSync.ts`, `frontend/src/api/compose.ts`
+
+**Goal:** Debounced live sync from compose tab to backend parse endpoint.
+
+**Tasks:**
+- `useComposeParse()` TanStack Query mutation wrapping `POST /api/v1/compose/parse`.
+- `useComposeSync(tabId)` custom hook:
+  - Watch `content` changes on the active compose tab.
+  - Debounce 500ms via `setTimeout`.
+  - Call parse mutation.
+  - On success: store `node_ids` + `suggestions` in tab state via `setComposeResult`.
+  - Update `graphStore.setComposeContext(node_ids)` for the compose lens.
+
+**Acceptance Criteria:**
+- Typing in compose tab triggers a parse 500ms after last keystroke.
+- Parse results populate the suggestion panel.
+- Graph view updates to show compose lens.
+
+---
+
+### TICKET-921: Compose Suggestions Panel
+
+**File:** `frontend/src/components/panels/ComposeSuggestionsPanel.tsx`
+
+**Goal:** Display variable-aware function suggestions when a compose tab is active.
+
+**Tasks:**
+- Render when active tab is `compose` (replaces ExternalRefsPanel position).
+- List suggestions grouped by variable name.
+- Each suggestion shows: function name, signature, match reason.
+- Click a suggestion: insert a call to that function at cursor position in Monaco.
+- Show parse status: syncing indicator, error count.
+
+**Acceptance Criteria:**
+- Suggestions update after each parse cycle.
+- Clicking a suggestion inserts valid function call syntax.
+- Empty state shown when no suggestions available.
+
+---
+
+### TICKET-922: Compose Lens in Graph View
+
+**Files:** `frontend/src/store/graphStore.ts`, `frontend/src/components/canvas/AtlasOverview.tsx`
+
+**Goal:** When a compose tab is active, fade non-relevant nodes in the Atlas graph view.
+
+**Tasks:**
+- Add `composeContextNodeIds: Set<string>` to graphStore.
+- Add actions: `setComposeContext(nodeIds)`, `clearComposeContext()`.
+- In `nodeReducer`: if `composeContextNodeIds.size > 0`:
+  - Compose context nodes → bright, highlighted, z-index 2.
+  - 1-hop neighbors → slightly dimmed, z-index 1.
+  - Everything else → faded to near-invisible (rgba(60,60,60,0.12)).
+- Use a ref for Sigma callback performance (same pattern as `highlightRef`).
+- Clear compose context when compose tab is closed.
+
+**Acceptance Criteria:**
+- Graph view clearly shows which nodes are in the compose context.
+- Non-relevant nodes are visually faded but still clickable.
+- Closing compose tab restores full graph visibility.
+
+---
+
+## Phase 12: Virtual Script View — Backend
+
+### TICKET-930: Cypher Queries for Script Assembly
+
+**File:** `backend/app/graph/logic_queries.py`
+
+**Goal:** Add queries to support script assembly from multiple LogicNodes.
+
+**Tasks:**
+- `GET_CLASS_FOR_METHOD`: Follow `MEMBER_OF` edge from method to class, include `__init__` params.
+- `GET_NODE_DATA_FLOW`: Get all ASSIGNS/READS/RETURNS variables for a LogicNode.
+
+**Acceptance Criteria:**
+- `GET_CLASS_FOR_METHOD` returns class name + constructor params for any method.
+- `GET_NODE_DATA_FLOW` returns complete variable lists grouped by role (assigns/reads/returns).
+
+---
+
+### TICKET-931: Script Assembler Service
+
+**File:** `backend/app/services/compose/script_assembler.py`
+
+**Goal:** Given a set of LogicNode IDs, generate a script that wires their inputs and outputs together.
+
+**Tasks:**
+- `assemble_script(node_ids: list[str], query_mode: str) -> AssemblyResult`:
+  1. Fetch each LogicNode by ID.
+  2. For methods with `self` param: follow `MEMBER_OF` → get class + `__init__` params.
+  3. Query each node's data flow (ASSIGNS/READS/RETURNS).
+  4. Build data-flow dependency graph: output of node A feeds input of node B.
+  5. Topological sort the selected nodes.
+  6. Generate script: imports (from DEPENDS_ON edges) → class instantiations → function calls wired by variable names.
+  7. Identify gaps: variables needed (READS) but not produced (ASSIGNS/RETURNS) by any selected node.
+  8. Return `{ script, imports, gaps: [{ variable_name, type_hint, needed_by }], class_context }`.
+- `query_mode` filter: `"explore"` = full graph, `"vfs"` = only `__compose__` module_path nodes.
+
+**Acceptance Criteria:**
+- Three functions with compatible types produce a wired script with correct variable assignments.
+- Methods with `self` include class instantiation with constructor params.
+- Missing variables appear as `# GAP: variable_name (type)` comments.
+- Topological sort handles diamond dependencies.
+- Import statements are generated from DEPENDS_ON edges.
+
+---
+
+### TICKET-932: POST /api/v1/compose/assemble Endpoint
+
+**File:** `backend/app/routers/compose.py` (extend)
+
+**Goal:** Expose the script assembler as an API endpoint.
+
+**Tasks:**
+- Accept `{ node_ids: string[], query_mode: "explore" | "vfs" }`.
+- Call `assemble_script()`.
+- Return `{ script, imports, gaps, class_context }`.
+
+**Acceptance Criteria:**
+- Valid response for 1-20 selected nodes.
+- Gaps are returned as structured data (not just comments in the script).
+- Error handling for invalid node IDs.
+
+---
+
+## Phase 13: Assembly into Compose — Frontend
+
+### TICKET-940: Assemble into Compose Tab
+
+**Files:** `frontend/src/store/editorStore.ts`, `frontend/src/api/compose.ts`
+
+**Goal:** Populate a compose tab with assembled content from a graph node selection.
+
+**Tasks:**
+- Add `openComposeFromAssembly(nodeIds, content, gaps)` action to editorStore — creates a compose tab pre-populated with assembled script.
+- Add `useAssembleScript()` TanStack Query mutation wrapping `POST /api/v1/compose/assemble`.
+- Entry points:
+  - "Assemble" button in graph view toolbar (when nodes are highlighted via Cypher query).
+  - Agent command (via terminal chat).
+- On click: call assemble endpoint, open compose tab with result. The tab has `sourceNodeIds` populated for context.
+
+**Acceptance Criteria:**
+- Highlighting nodes via Cypher query and clicking "Assemble" opens a compose tab with assembled content.
+- Tab contains the assembled script with gap comments.
+- Tab behaves identically to a manually-created compose tab (live sync, suggestions, editable).
+
+---
+
+### TICKET-941: Gap Highlighting in Monaco
+
+**File:** `frontend/src/components/editor/CodeEditor.tsx`
+
+**Goal:** Visually highlight gaps (missing variables) in compose tabs that have assembled content.
+
+**Tasks:**
+- For compose tabs with `gaps` data: parse content for `# GAP:` comments.
+- Apply Monaco decorations: warning color background on gap lines.
+- Glyph margin indicators for gap lines.
+- Gaps also listed in suggestion panel (reuse ComposeSuggestionsPanel) with resolution options.
+
+**Acceptance Criteria:**
+- Gap lines are visually distinct (yellow/amber background).
+- Glyph margin shows warning icon on gap lines.
+- Clicking a gap in the suggestion panel scrolls to it in the editor.
+
+---
+
+### TICKET-942: Save Compose Tab as Flow
+
+**Files:** `frontend/src/components/editor/CodeEditor.tsx` (or new toolbar component)
+
+**Goal:** Allow users to save a compose tab's content as a Flow in the graph.
+
+**Tasks:**
+- Add "Save as Flow" button in compose tab toolbar (visible when tab has `sourceNodeIds` or parsed `node_ids`).
+- On click: call `POST /api/v1/flows` with `node_ids` from the tab, entry/exit points derived from script order.
+- Uses existing `FlowCreate` model and `create_flow()` from `flow_service.py`.
+- Store returned `flow_id` on the tab.
+- Subsequent saves: call `PATCH /api/v1/flows/{flow_id}` (update).
+
+**Acceptance Criteria:**
+- "Save as Flow" creates a Flow node with correct STEP_OF edges.
+- Re-saving updates the existing Flow rather than creating a duplicate.
+- Flow appears in the graph and is queryable.
+
+---
+
+### TICKET-943: Query Mode Toggle
+
+**File:** New small component in editor toolbar area.
+
+**Goal:** Toggle between "explore" (full graph) and "compose" (VFS only) scope for assembly and suggestions.
+
+**Tasks:**
+- Render toggle when active tab is `compose`.
+- Toggle value controls `query_mode` parameter on assemble endpoint and suggestion scope.
+- Re-assemble on toggle change.
+
+**Acceptance Criteria:**
+- Toggle switches between explore/compose scope.
+- Script regenerates with the new scope.
+
+---
+
+## Phase 14: LLM Compatibility Layer (Future)
+
+### TICKET-950: LLM Suggestion Evaluator
+
+**File:** `backend/app/services/compose/llm_evaluator.py`
+
+**Goal:** LLM reviews deterministic suggestions and provides compatibility judgments.
+
+**Tasks:**
+- After suggestion service returns matches, build a Logic Pack context for the compose session.
+- Send to LLM with prompt: "Given these variables and these candidate functions, evaluate compatibility. For partial matches, explain what's missing and how to bridge the gap."
+- LLM uses agent tools (`find_node`, `get_variable_timeline`, `run_cypher`) to query the graph for additional context.
+- Return enriched suggestions: `{ ...suggestion, llm_verdict: string, llm_fix_hint: string }`.
+
+**Acceptance Criteria:**
+- LLM correctly identifies partial matches (e.g., "3 of 4 params available").
+- LLM suggests graph functions that could produce missing variables.
+- LLM does NOT fabricate variables or data — only references graph entities.
+- Degrades gracefully if LLM is unavailable (deterministic suggestions still work).
+
+**Note:** This ticket is future work. The deterministic suggestion layer (TICKET-911) ships first and is useful standalone.
+
+---
+
+### TICKET-951: LLM Script Assembly Review
+
+**File:** `backend/app/services/compose/llm_evaluator.py` (extend)
+
+**Goal:** LLM reviews assembled scripts and produces a compatibility report.
+
+**Tasks:**
+- After script assembler generates a script, send it + the Logic Packs for all involved nodes to the LLM.
+- LLM produces: type compatibility report, suggested reorderings, recommended additional functions from the graph.
+- LLM can suggest edits to the script (via the existing edit/preview pipeline).
+
+**Acceptance Criteria:**
+- LLM review catches type mismatches that the deterministic assembler misses.
+- Suggestions reference real graph nodes (not hallucinated functions).
+- Review is optional — script is usable without it.
+
+---
+
+### TICKET-952: Batch Variable Type Inference
+
+**File:** `backend/app/services/compose/type_inference.py`
+
+**Goal:** Use batch LLM inference to strongly type and normalize variable names across a codebase.
+
+**Tasks:**
+- For variables without `type_hint`, use LLM to infer types from context (usage patterns, function signatures, docstrings).
+- Normalize variable naming: identify semantically equivalent variables with different names.
+- Store inferred types as `type_hint` on Variable nodes (flagged as `inferred`, not `declared`).
+- Improves suggestion accuracy for untyped codebases.
+
+**Acceptance Criteria:**
+- Inferred types are stored with a flag distinguishing them from declared types.
+- Variable name normalization identifies semantic equivalences.
+- Batch processing handles 1000+ variables efficiently.
+
+**Note:** Backlog item. Improves suggestion quality but not required for v1.
+
+---
+
+## Execution Order
+
+```
+Phase 9 (Tab System)  ──────────────────────────────────────────┐
+  900 editorStore → 901 TabBar → 902 CodeEditor → 903 Layout    │
+                                                                  │
+Phase 10 (Backend Compose)                                        │
+  910 Cypher queries → 911 Suggestion service → 912 Endpoint     │
+                                                                  │
+Phase 11 (Frontend Compose) ← depends on Phase 9 + Phase 10      │
+  920 Sync hook, 921 Suggestion panel, 922 Compose lens          │
+                                                                  │
+Phase 12 (Backend Virtual Script) ← depends on Phase 10          │
+  930 Cypher queries → 931 Assembler → 932 Endpoint              │
+                                                                  │
+Phase 13 (Frontend Virtual Script) ← depends on Phase 9 + 12    │
+  940 Tab creation, 941 Gap highlights, 942 Save Flow, 943 Toggle│
+                                                                  │
+Phase 14 (LLM Layer) ← depends on Phase 11 + Phase 13           │
+  950 Suggestion evaluator, 951 Assembly review, 952 Type inference
+```
+
+**Recommended build order:**
+
+Phase 9 → Phase 10 → Phase 11 → Phase 12 → Phase 13 → Phase 14
+
+Phase 9 and Phase 10 can be built in parallel (frontend and backend are independent).
+
+---
 
 ## Verification Plan
 

@@ -444,3 +444,45 @@ CALL {
 }
 RETURN root, collect({flow: descendant, depth: depth}) as hierarchy
 ```
+
+### 6.7 Find LogicNodes by Parameter Type (Compose Suggestions)
+
+```cypher
+MATCH (n:LogicNode)
+WHERE n.status = 'active' AND n.params CONTAINS $type_hint
+RETURN n.id, n.name, n.params, n.signature, n.return_type
+LIMIT $limit
+```
+
+Note: `CONTAINS` on the JSON `params` string is a fast pre-filter. Python-side code parses the JSON for precise matching.
+
+### 6.8 Find LogicNodes by Return Type (Compose Suggestions)
+
+```cypher
+MATCH (n:LogicNode)
+WHERE n.status = 'active' AND n.return_type = $type_hint
+RETURN n.id, n.name, n.params, n.signature, n.return_type
+LIMIT $limit
+```
+
+### 6.9 Get Class Context for Method (Script Assembly)
+
+```cypher
+MATCH (m:LogicNode {id: $method_id})-[:MEMBER_OF]->(c:LogicNode {kind: 'class'})
+OPTIONAL MATCH (init:LogicNode)-[:MEMBER_OF]->(c)
+WHERE init.name ENDS WITH '.__init__'
+RETURN c.id AS class_id, c.name AS class_name, c.source_text AS class_source,
+       init.id AS init_id, init.params AS init_params
+```
+
+### 6.10 Get Node Data Flow (Script Assembly)
+
+```cypher
+MATCH (n:LogicNode {id: $node_id})
+OPTIONAL MATCH (n)-[:ASSIGNS]->(av:Variable)
+OPTIONAL MATCH (n)-[:READS]->(rv:Variable)
+OPTIONAL MATCH (n)-[:RETURNS]->(ret:Variable)
+RETURN collect(DISTINCT {id: av.id, name: av.name, type_hint: av.type_hint, role: 'assigns'}) AS assigns,
+       collect(DISTINCT {id: rv.id, name: rv.name, type_hint: rv.type_hint, role: 'reads'}) AS reads,
+       collect(DISTINCT {id: ret.id, name: ret.name, type_hint: ret.type_hint, role: 'returns'}) AS returns
+```

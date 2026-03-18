@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Send } from "lucide-react";
 import { useGraphStore } from "@/store/graphStore";
+import { useEditorStore, type EditorTab } from "@/store/editorStore";
 import type { GraphNode, GraphEdge } from "@/types/graph";
 
 interface ChatMessage {
@@ -15,11 +16,13 @@ interface ChatMessage {
 // ---------------------------------------------------------------------------
 
 const CYPHER_KEYWORDS = /^\s*(MATCH|RETURN|CREATE|MERGE|DELETE|DETACH|SET|REMOVE|WITH|UNWIND|CALL|OPTIONAL)\b/i;
+const VFS_CYPHER_PREFIX = /^\s*vfs\s+/i;
 const NL_PREFIX = /^\s*(\?|ask\s)/i;
 const CLI_COMMANDS = /^\s*(ls|cd|pwd|cat|tree|find|info|help)\b/i;
 
-function inputMode(text: string): "cypher" | "nl" | "cli" {
+function inputMode(text: string): "cypher" | "cypher_vfs" | "nl" | "cli" {
   const t = text.trim();
+  if (VFS_CYPHER_PREFIX.test(t)) return "cypher_vfs";
   if (CYPHER_KEYWORDS.test(t)) return "cypher";
   if (NL_PREFIX.test(t)) return "nl";
   if (CLI_COMMANDS.test(t)) return "cli";
@@ -190,6 +193,7 @@ function TerminalChat() {
           "",
           "Prefixes:",
           "  MATCH ...       Cypher query (auto-detected)",
+          "  vfs MATCH ...   Cypher query + project matched modules to .bumblebee/vfs/",
           "  ? <question>    Natural language query via LLM",
           "  ask <question>  Natural language query via LLM",
         ].join("\n"));
@@ -431,7 +435,7 @@ function TerminalChat() {
   // ---------------------------------------------------------------------------
 
   const executeCypher = useCallback(
-    async (cypher: string) => {
+    async (cypher: string, projectToVfs = false) => {
       setIsStreaming(true);
       try {
         // Run both the raw query (for text output) and subgraph query (for graph view) in parallel
@@ -462,6 +466,62 @@ function TerminalChat() {
           if (subgraph.nodes.length > 0) {
             const label = cypher.length > 30 ? cypher.slice(0, 27) + "..." : cypher;
             showQueryResult(label, subgraph.nodes, subgraph.edges);
+          }
+
+          // VFS projection: collect matched nodes, open them in a compose tab, and project to disk
+          if (projectToVfs && subgraph.nodes.length > 0) {
+            // Collect source text from all matched LogicNodes
+            const sources: string[] = [];
+            const nodeIds: string[] = [];
+            const modulePaths = new Set<string>();
+
+            for (const node of subgraph.nodes) {
+              const src = node.properties["source_text"];
+              const mp = node.properties["module_path"];
+              if (typeof src === "string" && src.trim()) {
+                sources.push(src);
+                nodeIds.push(node.id);
+              }
+              if (typeof mp === "string" && mp) modulePaths.add(mp);
+            }
+
+            // Open a compose tab with all matched functions assembled
+            if (sources.length > 0) {
+              const assembled = sources.join("\n\n");
+              const tabId = crypto.randomUUID();
+              const queryShort = cypher.length > 25 ? cypher.slice(0, 22) + "..." : cypher;
+              const tab: EditorTab = {
+                id: tabId,
+                label: `vfs: ${queryShort}`,
+                nodeId: null,
+                modulePath: `__vfs_query__.${tabId}`,
+                content: assembled,
+                language: "python",
+                sourceNodeIds: nodeIds,
+                flowId: null,
+                gaps: null,
+                isDirty: false,
+              };
+              useEditorStore.getState().openTab(tab);
+              addMsg("system", `VFS: opened ${sources.length} function${sources.length !== 1 ? "s" : ""} in editor`);
+            }
+
+            // Also project to disk
+            if (modulePaths.size > 0) {
+              try {
+                const vfsRes = await fetch("/api/v1/vfs/project-modules", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ module_paths: [...modulePaths] }),
+                });
+                if (vfsRes.ok) {
+                  const report = (await vfsRes.json()) as { files_written: number; modules_projected: number; errors: string[] };
+                  addMsg("system", `VFS: projected ${report.modules_projected} module${report.modules_projected !== 1 ? "s" : ""} to .bumblebee/vfs/`);
+                }
+              } catch {
+                // disk projection is secondary — don't block on failure
+              }
+            }
           }
         }
       } catch (err) {
@@ -621,7 +681,10 @@ function TerminalChat() {
       setInput("");
 
       const mode = inputMode(text);
-      if (mode === "cypher") {
+      if (mode === "cypher_vfs") {
+        const cypher = text.trim().replace(VFS_CYPHER_PREFIX, "").trim();
+        await executeCypher(cypher, true);
+      } else if (mode === "cypher") {
         await executeCypher(text.trim());
       } else if (mode === "nl") {
         await executeNl(stripNlPrefix(text));
