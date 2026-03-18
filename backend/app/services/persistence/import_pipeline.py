@@ -24,7 +24,7 @@ from app.services.analysis.hash_identity import (
     extract_params_detailed,
     extract_return_type,
     extract_signature_text,
-    generate_node_id,
+    generate_deterministic_node_id,
 )
 from app.services.parsing.relationship_extractor import RelationshipEdge, extract_relationships
 from app.services.parsing.variable_extractor import extract_variables
@@ -113,24 +113,24 @@ def import_file(
             continue
 
         kind = _parsed_type_to_kind(parsed_node)
-        node_id = generate_node_id()
+        node_id = generate_deterministic_node_id(parsed_node.name)
         ast_hash = compute_ast_hash(parsed_node.source_text)
-        signature = extract_signature_text(parsed_node.source_text)
-        return_type = extract_return_type(parsed_node.source_text)
-        params_raw = extract_params_detailed(parsed_node.source_text) if kind != LogicNodeKind.CLASS else []
 
-        # Check for existing node with same name and module_path (incremental)
-        existing_id = _find_existing_node(parsed_node.name, module_path)
-        if existing_id:
-            # Check if content changed
-            existing_hash = _get_existing_hash(existing_id)
-            if existing_hash == ast_hash:
-                name_to_id[parsed_node.name] = existing_id
-                continue  # No change, skip
-            node_id = existing_id  # Update in place
+        # Skip unchanged nodes
+        existing_hash = _get_existing_hash(node_id)
+        if existing_hash == ast_hash:
+            name_to_id[parsed_node.name] = node_id
+            continue
+
+        is_update = existing_hash is not None
+        if is_update:
             report.nodes_updated += 1
         else:
             report.nodes_created += 1
+
+        signature = extract_signature_text(parsed_node.source_text)
+        return_type = extract_return_type(parsed_node.source_text)
+        params_raw = extract_params_detailed(parsed_node.source_text) if kind != LogicNodeKind.CLASS else []
 
         params_json = json.dumps(params_raw)
         decorators_json = json.dumps(parsed_node.decorators)
@@ -160,6 +160,9 @@ def import_file(
                 "updated_at": now,
             },
         )
+
+        # Clean up any old non-deterministic nodes for the same function
+        _cleanup_old_node_ids(parsed_node.name, module_path, node_id)
 
         name_to_id[parsed_node.name] = node_id
 
@@ -209,7 +212,7 @@ def import_file(
             var_name_to_id: dict[str, str] = {}
 
             for var_node in var_result.nodes:
-                var_id = generate_node_id()
+                var_id = generate_deterministic_node_id(f"{var_node.name}::{var_node.scope}")
                 origin_node_id = name_to_id.get(var_node.origin_func, "")
                 if not origin_node_id:
                     continue
@@ -280,8 +283,8 @@ def import_directory(
         report.errors.append(f"Not a directory: {dir_path}")
         return report
 
-    # Clear existing graph data before importing a new repo
-    _clear_graph()
+    # Collect existing node module_paths before import for stale cleanup
+    _pre_import_paths = _get_existing_module_paths()
 
     # Set watch_path so the file endpoint can serve files from this repo
     from app.config import settings  # pylint: disable=import-outside-toplevel
@@ -376,7 +379,7 @@ def import_directory(
                 var_name_to_id: dict[str, str] = {}
 
                 for var_node in var_result.nodes:
-                    var_id = generate_node_id()
+                    var_id = generate_deterministic_node_id(f"{var_node.name}::{var_node.scope}")
                     origin_node_id = global_name_to_id.get(var_node.origin_func, "")
                     if not origin_node_id:
                         continue
@@ -417,6 +420,13 @@ def import_directory(
                             pass
         except Exception as exc:
             report.errors.append(f"Variable extraction error in {file_path_str}: {exc}")
+
+    # Clean up stale nodes: files that no longer exist on disk
+    imported_abs_paths = {str(f.resolve()) for f in files}
+    stale_paths = [p for p in _pre_import_paths if p not in imported_abs_paths]
+    if stale_paths:
+        _cleanup_stale_nodes(stale_paths)
+        logger.info("Cleaned up stale nodes from %d removed files", len(stale_paths))
 
     logger.info(
         "Import complete: %d files, %d nodes created, %d updated, %d edges, %d variables, %d errors",
@@ -471,14 +481,46 @@ def _find_package_root(file_path: Path, search_root: Path) -> Path:
     return current
 
 
-def _clear_graph() -> None:
-    """Delete all nodes and edges from the graph to prepare for a fresh import."""
+def _get_existing_module_paths() -> list[str]:
+    """Get all distinct module_path values from existing LogicNodes."""
     graph = get_graph()
     try:
-        graph.query("MATCH (n) DETACH DELETE n")
-        logger.info("Cleared existing graph data")
-    except Exception as exc:
-        logger.warning("Failed to clear graph: %s", exc)
+        result = graph.query("MATCH (n:LogicNode) RETURN DISTINCT n.module_path")
+        return [str(row[0]) for row in result.result_set]
+    except Exception:
+        return []
+
+
+def _cleanup_stale_nodes(stale_paths: list[str]) -> None:
+    """Delete LogicNodes and their Variables for files no longer on disk."""
+    graph = get_graph()
+    # Delete variables whose origin nodes are in stale files
+    graph.query(
+        "MATCH (v:Variable)-[:ASSIGNS|MUTATES|READS|RETURNS]-(n:LogicNode) "
+        "WHERE n.module_path IN $paths DETACH DELETE v",
+        params={"paths": stale_paths},
+    )
+    # Delete the stale LogicNodes
+    graph.query(
+        "MATCH (n:LogicNode) WHERE n.module_path IN $paths DETACH DELETE n",
+        params={"paths": stale_paths},
+    )
+
+
+def _cleanup_old_node_ids(name: str, module_path: str, keep_id: str) -> None:
+    """Delete any LogicNodes with the same name/module_path but a different ID.
+
+    Cleans up legacy random-UUID nodes after migration to deterministic IDs.
+    """
+    graph = get_graph()
+    try:
+        graph.query(
+            "MATCH (n:LogicNode {name: $name, module_path: $module_path}) "
+            "WHERE n.id <> $keep_id DETACH DELETE n",
+            params={"name": name, "module_path": module_path, "keep_id": keep_id},
+        )
+    except Exception:
+        pass
 
 
 def _file_to_module_path(file_path: str) -> str:

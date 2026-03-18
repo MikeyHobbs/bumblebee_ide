@@ -17,7 +17,6 @@ import {
 import "@xyflow/react/dist/style.css";
 import { nodeTypes } from "@/graph/nodes";
 import { edgeTypes } from "@/graph/edges";
-import { computeForceLayout } from "@/graph/layout/forceLayout";
 import { computeDagreLayout } from "@/graph/layout/dagreLayout";
 import { useGraphStore } from "@/store/graphStore";
 import {
@@ -62,7 +61,7 @@ function toFlowEdges(graphEdges: GraphEdge[]): Edge[] {
 }
 
 
-/** Legacy ReactFlow views for variable-flow and query-result */
+/** Legacy ReactFlow view for variable-flow */
 function LegacyReactFlowView() {
   const viewMode = useGraphStore((s) => s.viewMode);
   const activeNodeId = useGraphStore((s) => s.activeNodeId);
@@ -73,9 +72,6 @@ function LegacyReactFlowView() {
   const { data: variableData } = useVariableDetail(
     viewMode === "variable-flow" ? activeNodeId : null,
   );
-
-  // Query result
-  const queryResultData = useGraphStore((s) => s.queryResultData);
 
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
@@ -89,16 +85,6 @@ function LegacyReactFlowView() {
     setNodes(laid);
     setEdges(rawEdges);
   }, [variableData, viewMode]);
-
-  // Query result
-  useEffect(() => {
-    if (viewMode !== "query-result" || !queryResultData) return;
-    const rawNodes = toFlowNodes(queryResultData.nodes);
-    const rawEdges = toFlowEdges(queryResultData.edges);
-    const laid = computeForceLayout(rawNodes, rawEdges);
-    setNodes(laid);
-    setEdges(rawEdges);
-  }, [queryResultData, viewMode]);
 
   const onNodesChange: OnNodesChange = useCallback(
     (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
@@ -176,7 +162,7 @@ function GraphCanvas() {
     );
   }
 
-  // Legacy views: variable-flow, query-result
+  // Legacy view: variable-flow
   return <LegacyReactFlowView />;
 }
 

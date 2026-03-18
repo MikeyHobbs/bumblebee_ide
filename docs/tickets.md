@@ -759,6 +759,17 @@ Run Cypher queries against FalkorDB and filter/highlight the Atlas graph view to
 - Backend: FalkorDB client already available via FastAPI lifespan
 
 
+## TICKET-704: Bring your dependencies, bring your api, bring your mcp
+
+**Priority:** Backlog
+**Area:** Backend
+
+Dependency and packages are part of the functional blocks avaliable to use and should be treated as such. Available in 
+queries and when building 
+
+THIS TICKET IS IN DEVELOPMENT AND NEEDS FLESHING OUT
+
+
 ## Verification Plan
 
 1. **Import pipeline test:** Import the bumblebee_ide backend itself, verify all functions become LogicNodes with correct hash IDs and edges.

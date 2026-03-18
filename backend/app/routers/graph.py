@@ -57,7 +57,7 @@ def _node_to_response(node) -> GraphNodeResponse:  # type: ignore[no-untyped-def
                 props[k] = v
             else:
                 props[k] = str(v)
-    node_id = props.get("name", str(node.id if hasattr(node, "id") else ""))
+    node_id = props.get("id", props.get("name", str(node.id if hasattr(node, "id") else "")))
     return GraphNodeResponse(id=str(node_id), label=label, properties=props)
 
 
@@ -100,8 +100,8 @@ class SubgraphResponse(BaseModel):
 
 def _extract_edge(rel, src_node, dst_node) -> GraphEdgeResponse:  # type: ignore[no-untyped-def]
     """Extract an edge response from a FalkorDB relationship and its endpoint nodes."""
-    src_name = src_node.properties.get("name", str(src_node.id)) if hasattr(src_node, "properties") else ""
-    dst_name = dst_node.properties.get("name", str(dst_node.id)) if hasattr(dst_node, "properties") else ""
+    src_name = src_node.properties.get("id", src_node.properties.get("name", str(src_node.id))) if hasattr(src_node, "properties") else ""
+    dst_name = dst_node.properties.get("id", dst_node.properties.get("name", str(dst_node.id))) if hasattr(dst_node, "properties") else ""
     edge_type = rel.relation if hasattr(rel, "relation") and isinstance(rel.relation, str) else str(getattr(rel, "relation", ""))
     props: dict[str, str | int | bool | None] = {}
     if hasattr(rel, "properties"):
@@ -568,7 +568,7 @@ async def query_subgraph(request: GraphQueryRequest) -> SubgraphResponse:
         if unresolved:
             name_list = list(unresolved)
             resolve_result = graph.query(
-                "MATCH (n) WHERE n.name IN $names RETURN n",
+                "MATCH (n) WHERE n.name IN $names OR n.id IN $names RETURN n",
                 params={"names": name_list},
             )
             for row in resolve_result.result_set:
@@ -580,12 +580,12 @@ async def query_subgraph(request: GraphQueryRequest) -> SubgraphResponse:
         # Fetch edges between the collected nodes (and outgoing edges for single-node results)
         edges: list[GraphEdgeResponse] = []
         if seen:
-            name_list = list(seen)
+            id_list = list(seen)
             edge_result = graph.query(
                 "MATCH (a)-[r]->(b) "
-                "WHERE a.name IN $names AND b.name IN $names "
+                "WHERE a.id IN $ids AND b.id IN $ids "
                 "RETURN a, r, b",
-                params={"names": name_list},
+                params={"ids": id_list},
             )
             for row in edge_result.result_set:
                 edges.append(_extract_edge(row[1], row[0], row[2]))

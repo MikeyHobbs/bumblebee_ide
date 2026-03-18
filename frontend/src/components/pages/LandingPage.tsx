@@ -78,7 +78,7 @@ function LandingPage({ onIndexed }: LandingPageProps) {
           className="text-sm text-center mb-8"
           style={{ color: "var(--text-secondary)" }}
         >
-          Visual Logic Engine
+          Code is a Graph
         </p>
 
         <form onSubmit={handleFormSubmit} className="space-y-3">

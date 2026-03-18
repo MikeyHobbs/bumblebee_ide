@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 
 import tree_sitter
 import tree_sitter_python
 from uuid_extensions import uuid7
+
+_BUMBLEBEE_NS = uuid.UUID("d7e6f5a4-b3c2-1d0e-9f8a-7b6c5d4e3f2a")
 
 
 _parser_instance: tree_sitter.Parser | None = None
@@ -35,6 +38,21 @@ def generate_node_id() -> str:
         String representation of a UUID7.
     """
     return str(uuid7())
+
+
+def generate_deterministic_node_id(name: str) -> str:
+    """Generate a stable node ID from the node's qualified name.
+
+    Uses UUID5 (SHA-1, deterministic) so the same function always
+    gets the same ID regardless of when it is indexed.
+
+    Args:
+        name: Module-qualified name (e.g. ``app.services.utils.my_function``).
+
+    Returns:
+        String representation of a deterministic UUID5.
+    """
+    return str(uuid.uuid5(_BUMBLEBEE_NS, name))
 
 
 def _canonicalize_ast(source_text: str) -> str:

@@ -57,22 +57,27 @@ function AtlasOverview() {
   const wasDragged = useRef(false);
   const hoveredNode = useRef<string | null>(null);
   const traceRef = useRef<Set<string>>(new Set());
+  const highlightRef = useRef<Set<string>>(new Set());
 
   // Store state
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
   const expandedNodeId = useGraphStore((s) => s.expandedNodeId);
   const tracedVariableId = useGraphStore((s) => s.tracedVariableId);
+  const highlightedNodeIds = useGraphStore((s) => s.highlightedNodeIds);
+  const queryResultData = useGraphStore((s) => s.queryResultData);
+  const queryLabel = useGraphStore((s) => s.queryHighlightLabel);
   const navigateToNode = useGraphStore((s) => s.navigateToNode);
   const goHome = useGraphStore((s) => s.goHome);
   const expandNode = useGraphStore((s) => s.expandNode);
   const collapseExpanded = useGraphStore((s) => s.collapseExpanded);
   const traceVariable = useGraphStore((s) => s.traceVariable);
   const clearTrace = useGraphStore((s) => s.clearTrace);
+  const expandHighlight = useGraphStore((s) => s.expandHighlight);
   const openNodeView = useEditorStore((s) => s.openNodeView);
 
   // Stable refs for callbacks
-  const callbacksRef = useRef({ navigateToNode, goHome, expandNode, collapseExpanded, openNodeView, traceVariable, clearTrace });
-  callbacksRef.current = { navigateToNode, goHome, expandNode, collapseExpanded, openNodeView, traceVariable, clearTrace };
+  const callbacksRef = useRef({ navigateToNode, goHome, expandNode, collapseExpanded, openNodeView, traceVariable, clearTrace, expandHighlight });
+  callbacksRef.current = { navigateToNode, goHome, expandNode, collapseExpanded, openNodeView, traceVariable, clearTrace, expandHighlight };
 
   // Ref to track focused/expanded in event handlers without re-creating Sigma
   const focusRef = useRef({ focusedNodeId, expandedNodeId });
@@ -321,6 +326,99 @@ function AtlasOverview() {
     sigmaRef.current?.refresh();
   }, [tracedVariableId, traceVariables]);
 
+  // Sync highlight ref and animate camera to fit highlighted nodes
+  useEffect(() => {
+    const wasEmpty = highlightRef.current.size === 0;
+    highlightRef.current = highlightedNodeIds;
+    sigmaRef.current?.refresh();
+
+    const sigma = sigmaRef.current;
+    const graph = graphRef.current;
+    if (!sigma || !graph || highlightedNodeIds.size === 0) return;
+
+    // Only animate camera when highlights change (not on clear — goHome handles that)
+    const ids = Array.from(highlightedNodeIds).filter((id) => graph.hasNode(id));
+    if (ids.length === 0) return;
+
+    if (ids.length === 1) {
+      const nodeId = ids[0]!;
+      const attrs = graph.getNodeAttributes(nodeId);
+      const vp = sigma.graphToViewport({ x: attrs.x as number, y: attrs.y as number });
+      const fc = sigma.viewportToFramedGraph(vp);
+      sigma.getCamera().animate({ x: fc.x, y: fc.y, ratio: 0.1 }, { duration: 600 });
+    } else {
+      // Compute bounding box and animate to fit
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const id of ids) {
+        const attrs = graph.getNodeAttributes(id);
+        const x = attrs.x as number;
+        const y = attrs.y as number;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      const vp = sigma.graphToViewport({ x: cx, y: cy });
+      const fc = sigma.viewportToFramedGraph(vp);
+
+      // Estimate ratio to fit the bounding box with padding
+      const spanX = maxX - minX || 1;
+      const spanY = maxY - minY || 1;
+      const graphExtent = Math.max(spanX, spanY);
+      // Get the full graph extent for ratio calculation
+      let gMinX = Infinity, gMaxX = -Infinity, gMinY = Infinity, gMaxY = -Infinity;
+      graph.forEachNode((_, a) => {
+        const nx = a.x as number;
+        const ny = a.y as number;
+        if (nx < gMinX) gMinX = nx;
+        if (nx > gMaxX) gMaxX = nx;
+        if (ny < gMinY) gMinY = ny;
+        if (ny > gMaxY) gMaxY = ny;
+      });
+      const fullExtent = Math.max(gMaxX - gMinX, gMaxY - gMinY) || 1;
+      const ratio = Math.max(0.05, Math.min(0.8, (graphExtent / fullExtent) * 1.5));
+
+      sigma.getCamera().animate(
+        { x: fc.x, y: fc.y, ratio },
+        { duration: wasEmpty ? 600 : 400 },
+      );
+    }
+  }, [highlightedNodeIds]);
+
+  // Resolve query result node IDs against graphology keys (handles ID mismatches)
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!queryResultData || !graph || queryResultData.nodes.length === 0) return;
+
+    const matched = new Set<string>();
+
+    for (const qNode of queryResultData.nodes) {
+      // Direct ID match (ideal case — both use UUID)
+      if (graph.hasNode(qNode.id)) {
+        matched.add(qNode.id);
+        continue;
+      }
+
+      // Fallback: match by name property
+      const rawName = qNode.properties.name;
+      const qName = typeof rawName === "string" ? rawName : qNode.id;
+      graph.forEachNode((gNodeId, attrs) => {
+        if (attrs.name === qName) {
+          matched.add(gNodeId);
+        }
+      });
+    }
+
+    if (matched.size > 0) {
+      useGraphStore.setState({
+        highlightedNodeIds: matched,
+        focusedNodeId: matched.size === 1 ? Array.from(matched)[0]! : null,
+      });
+    }
+  }, [queryResultData]);
+
   // Camera animation on focus change
   const animateToNode = useCallback((nodeId: string | null) => {
     const sigma = sigmaRef.current;
@@ -381,6 +479,7 @@ function AtlasOverview() {
         const hovered = hoveredNode.current;
         const graph = graphRef.current;
         const tracedIds = traceRef.current;
+        const highlightIds = highlightRef.current;
 
         // Variable trace mode
         if (tracedIds.size > 0) {
@@ -391,6 +490,23 @@ function AtlasOverview() {
             res.color = "rgba(60,60,60,0.12)";
             res.label = "";
             res.zIndex = 0;
+          }
+          return res;
+        }
+
+        // Query highlight mode
+        if (highlightIds.size > 0) {
+          if (highlightIds.has(node)) {
+            res.highlighted = true;
+            res.zIndex = 2;
+          } else {
+            res.color = "rgba(60,60,60,0.12)";
+            res.label = "";
+            res.zIndex = 0;
+          }
+          // Apply focus emphasis within highlighted set
+          if (fid === node) {
+            res.size = (data.size as number) + 3;
           }
           return res;
         }
@@ -436,6 +552,7 @@ function AtlasOverview() {
         const hovered = hoveredNode.current;
         const graph = graphRef.current;
         const tracedIds = traceRef.current;
+        const highlightIds = highlightRef.current;
 
         // Variable trace mode
         if (tracedIds.size > 0 && graph) {
@@ -444,6 +561,19 @@ function AtlasOverview() {
           if (tracedIds.has(src) && tracedIds.has(tgt)) {
             res.color = VARIABLE_COLOR;
             res.size = 1.5;
+          } else {
+            res.color = "rgba(60,60,60,0.03)";
+          }
+          return res;
+        }
+
+        // Query highlight mode
+        if (highlightIds.size > 0 && graph) {
+          const src = graph.source(edge);
+          const tgt = graph.target(edge);
+          if (highlightIds.has(src) && highlightIds.has(tgt)) {
+            res.color = "rgba(255,255,255,0.08)";
+            res.size = 0.5;
           } else {
             res.color = "rgba(60,60,60,0.03)";
           }
@@ -500,18 +630,69 @@ function AtlasOverview() {
     });
 
     // Single click: focus on node (skip if we were dragging)
-    sigma.on("clickNode", ({ node }) => {
+    // Cmd+click: expand highlights with neighbors
+    sigma.on("clickNode", ({ node, event }) => {
       if (wasDragged.current) {
         wasDragged.current = false;
         return;
       }
-      const attrs = graphRef.current?.getNodeAttributes(node);
+      const graph = graphRef.current;
+      const attrs = graph?.getNodeAttributes(node);
       if (!attrs || attrs.isVariable) return;
 
       const nodeName = typeof attrs.name === "string" ? attrs.name : node;
       const kind = typeof attrs.kind === "string" ? attrs.kind : "";
       const modulePath = typeof attrs.modulePath === "string" ? attrs.modulePath : "";
+      const isMeta = event.original.metaKey || event.original.ctrlKey;
 
+      if (isMeta && graph) {
+        // Cmd+click: expand highlight set with this node + its neighbors
+        const neighbors = graph.neighbors(node).filter((n) => {
+          const na = graph.getNodeAttributes(n);
+          return !na.isVariable;
+        });
+        callbacksRef.current.expandHighlight(node, neighbors);
+
+        // Also fetch + open in editor
+        void apiFetch<{ source_text: string }>(`/api/v1/nodes/${node}`)
+          .then((full) => {
+            callbacksRef.current.openNodeView({
+              nodeId: node,
+              name: localName(nodeName),
+              kind,
+              sourceText: full.source_text,
+              modulePath,
+            });
+          })
+          .catch((err) => console.warn(`Failed to fetch node ${node}:`, err));
+        return;
+      }
+
+      // Plain click with active highlights: focus within set, pan to node
+      if (highlightRef.current.size > 0) {
+        focusRef.current = { ...focusRef.current, focusedNodeId: node };
+        useGraphStore.setState({ focusedNodeId: node, selectedNodeId: null });
+        // Pan to center on node without changing zoom
+        const nodeVp = sigma.graphToViewport({ x: attrs.x as number, y: attrs.y as number });
+        const fc = sigma.viewportToFramedGraph(nodeVp);
+        sigma.getCamera().animate({ x: fc.x, y: fc.y }, { duration: 300 });
+        sigma.refresh();
+
+        void apiFetch<{ source_text: string }>(`/api/v1/nodes/${node}`)
+          .then((full) => {
+            callbacksRef.current.openNodeView({
+              nodeId: node,
+              name: localName(nodeName),
+              kind,
+              sourceText: full.source_text,
+              modulePath,
+            });
+          })
+          .catch((err) => console.warn(`Failed to fetch node ${node}:`, err));
+        return;
+      }
+
+      // Plain click, no highlights: navigate (existing behavior)
       callbacksRef.current.navigateToNode(node, localName(nodeName));
 
       // Fetch source_text on demand — overview payload omits it for performance
@@ -525,7 +706,7 @@ function AtlasOverview() {
             modulePath,
           });
         })
-        .catch(() => {});
+        .catch((err) => console.warn(`Failed to fetch node ${node}:`, err));
     });
 
     // Double click: expand or trace
@@ -545,9 +726,9 @@ function AtlasOverview() {
       preventSigmaDefault();
     });
 
-    // Click stage: go home
+    // Click stage: go home (zoom back out)
     sigma.on("clickStage", () => {
-      if (focusRef.current.focusedNodeId || traceRef.current.size > 0) {
+      if (focusRef.current.focusedNodeId || traceRef.current.size > 0 || highlightRef.current.size > 0) {
         callbacksRef.current.clearTrace();
         callbacksRef.current.collapseExpanded();
         callbacksRef.current.goHome();
@@ -645,10 +826,10 @@ function AtlasOverview() {
     };
   }, [graphData]);
 
-  // Refresh sigma when focus/expand/trace state changes
+  // Refresh sigma when focus/expand/trace/highlight state changes
   useEffect(() => {
     sigmaRef.current?.refresh();
-  }, [focusedNodeId, expandedNodeId, tracedVariableId]);
+  }, [focusedNodeId, expandedNodeId, tracedVariableId, highlightedNodeIds]);
 
   if (overviewError) {
     return (
@@ -692,6 +873,26 @@ function AtlasOverview() {
           background: "var(--bg-primary)",
         }}
       />
+      {highlightedNodeIds.size > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            top: 8,
+            right: 12,
+            fontSize: 11,
+            fontFamily: "monospace",
+            color: "var(--text-primary)",
+            background: "var(--bg-secondary)",
+            border: "1px solid var(--border-primary)",
+            borderRadius: 4,
+            padding: "4px 8px",
+            pointerEvents: "none",
+            userSelect: "none",
+          }}
+        >
+          {queryLabel ? `${queryLabel}: ` : ""}{highlightedNodeIds.size} node{highlightedNodeIds.size !== 1 ? "s" : ""} selected
+        </div>
+      )}
       {overview && (
         <div
           style={{

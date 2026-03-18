@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { GraphNode, GraphEdge, SemanticDiff } from "@/types/graph";
 
-type ViewMode = "knowledge-graph" | "flow-view" | "variable-flow" | "query-result";
+type ViewMode = "knowledge-graph" | "flow-view" | "variable-flow";
 
 interface BreadcrumbEntry {
   viewMode: ViewMode;
@@ -29,7 +29,8 @@ interface GraphState {
   expandedNodeId: string | null;
   tracedVariableId: string | null;
 
-  // Query results
+  // Query results (highlight mode)
+  queryHighlightLabel: string | null;
   queryResultData: { nodes: GraphNode[]; edges: GraphEdge[] } | null;
 
   // Semantic diff
@@ -56,8 +57,9 @@ interface GraphState {
   traceVariable: (variableId: string) => void;
   clearTrace: () => void;
 
-  // Query result
+  // Query result (highlight on Sigma canvas)
   showQueryResult: (label: string, nodes: GraphNode[], edges: GraphEdge[]) => void;
+  expandHighlight: (nodeId: string, neighborIds: string[]) => void;
 
   // Diff
   setActiveDiff: (diff: SemanticDiff | null) => void;
@@ -72,6 +74,7 @@ export const useGraphStore = create<GraphState>((set) => ({
   indexing: false,
   viewMode: "knowledge-graph",
   activeNodeId: null,
+  queryHighlightLabel: null,
   queryResultData: null,
   activeDiff: null,
   focusedNodeId: null,
@@ -166,6 +169,8 @@ export const useGraphStore = create<GraphState>((set) => ({
       focusedNodeId: null,
       expandedNodeId: null,
       tracedVariableId: null,
+      highlightedNodeIds: new Set<string>(),
+      queryHighlightLabel: null,
       breadcrumb: [{ viewMode: "knowledge-graph", label: "Graph", nodeId: null, focusedNodeId: null }],
     }),
 
@@ -182,17 +187,35 @@ export const useGraphStore = create<GraphState>((set) => ({
 
   showQueryResult: (label, nodes, edges) =>
     set((state) => ({
-      viewMode: "query-result",
+      viewMode: "knowledge-graph",
       activeNodeId: null,
       selectedNodeId: null,
       focusedNodeId: null,
       expandedNodeId: null,
+      highlightedNodeIds: new Set<string>(),
+      queryHighlightLabel: label,
       queryResultData: { nodes, edges },
       breadcrumb: [
         state.breadcrumb[0]!,
-        { viewMode: "query-result", label, nodeId: null, focusedNodeId: null },
+        {
+          viewMode: "knowledge-graph",
+          label,
+          nodeId: null,
+          focusedNodeId: null,
+        },
       ],
     })),
+
+  expandHighlight: (nodeId, neighborIds) =>
+    set((state) => {
+      const next = new Set(state.highlightedNodeIds);
+      next.add(nodeId);
+      for (const nid of neighborIds) next.add(nid);
+      return {
+        highlightedNodeIds: next,
+        focusedNodeId: nodeId,
+      };
+    }),
 
   setActiveDiff: (diff) => set({ activeDiff: diff }),
 }));
