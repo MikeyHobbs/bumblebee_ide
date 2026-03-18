@@ -21,6 +21,7 @@ from app.models.logic_models import LogicNodeCreate, LogicNodeKind, LogicNodeRes
 from app.services.parsing.ast_parser import ParsedNode, ParseResult, parse_file
 from app.services.analysis.hash_identity import (
     compute_ast_hash,
+    compute_structural_hash,
     extract_params_detailed,
     extract_return_type,
     extract_signature_text,
@@ -130,6 +131,7 @@ def import_file(
 
         signature = extract_signature_text(parsed_node.source_text)
         return_type = extract_return_type(parsed_node.source_text)
+        structural_hash = compute_structural_hash(parsed_node.source_text)
         params_raw = extract_params_detailed(parsed_node.source_text) if kind != LogicNodeKind.CLASS else []
 
         params_json = json.dumps(params_raw)
@@ -140,6 +142,7 @@ def import_file(
             params={
                 "id": node_id,
                 "ast_hash": ast_hash,
+                "structural_hash": structural_hash,
                 "kind": kind.value,
                 "name": parsed_node.name,
                 "module_path": module_path,

@@ -180,7 +180,7 @@ def _node_to_dict(props: Any) -> dict[str, Any]:
     """Convert a graph node's properties to a serializable dict."""
     data: dict[str, Any] = {}
     keys = [
-        "id", "ast_hash", "kind", "name", "module_path", "signature",
+        "id", "ast_hash", "structural_hash", "kind", "name", "module_path", "signature",
         "source_text", "semantic_intent", "docstring", "decorators",
         "params", "return_type", "tags", "class_id", "derived_from",
         "status", "created_at", "updated_at",

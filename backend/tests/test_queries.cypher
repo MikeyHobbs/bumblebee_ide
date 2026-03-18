@@ -71,3 +71,11 @@ WITH n.ast_hash AS hash, collect(n) AS nodes
 WHERE size(nodes) > 2
 UNWIND nodes AS n
 RETURN n
+
+--Find duplicate functions by structural hash:
+MATCH (n:LogicNode)
+WHERE n.status = 'active'
+WITH n.structural_hash AS hash, collect(n) AS nodes
+WHERE size(nodes) > 2
+UNWIND nodes AS n
+RETURN n

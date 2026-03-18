@@ -226,6 +226,7 @@ def _prepare_node_item(data: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "id": node_id,
         "ast_hash": data.get("ast_hash", ""),
+        "structural_hash": data.get("structural_hash", ""),
         "kind": data.get("kind", "function"),
         "name": data.get("name", ""),
         "module_path": data.get("module_path", ""),

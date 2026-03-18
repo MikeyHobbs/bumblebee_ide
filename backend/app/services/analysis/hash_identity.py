@@ -124,6 +124,135 @@ def _canonicalize_ast(source_text: str) -> str:
     return " ".join(tokens)
 
 
+_PYTHON_KEYWORDS = frozenset({
+    "False", "None", "True", "and", "as", "assert", "async", "await",
+    "break", "class", "continue", "def", "del", "elif", "else", "except",
+    "finally", "for", "from", "global", "if", "import", "in", "is",
+    "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
+    "while", "with", "yield",
+})
+
+_BUILTIN_NAMES = frozenset({
+    "print", "len", "range", "enumerate", "zip", "map", "filter", "sorted",
+    "reversed", "list", "dict", "set", "tuple", "str", "int", "float",
+    "bool", "bytes", "type", "isinstance", "issubclass", "hasattr",
+    "getattr", "setattr", "delattr", "super", "property", "staticmethod",
+    "classmethod", "abs", "min", "max", "sum", "any", "all", "id", "hash",
+    "repr", "iter", "next", "open", "input", "round", "pow", "divmod",
+    "callable", "vars", "dir", "globals", "locals", "exec", "eval",
+    "compile", "format", "chr", "ord", "hex", "oct", "bin",
+    "object", "Exception", "BaseException", "ValueError", "TypeError",
+    "KeyError", "IndexError", "AttributeError", "RuntimeError",
+    "StopIteration", "NotImplementedError", "OSError", "IOError",
+    "FileNotFoundError", "PermissionError", "ImportError",
+})
+
+# tree-sitter node types that represent identifiers to abstract
+_IDENTIFIER_TYPES = frozenset({"identifier"})
+
+# tree-sitter node types that represent literals to abstract
+_STRING_TYPES = frozenset({"string", "concatenated_string", "string_content", "escape_sequence"})
+_NUMBER_TYPES = frozenset({"integer", "float"})
+
+
+def _canonicalize_structural(source_text: str) -> str:
+    """Produce a structural representation of Python source for shape hashing.
+
+    Like ``_canonicalize_ast`` but abstracts away identifier names and literal
+    values so that structurally identical code with different variable names,
+    strings, or numbers produces the same canonical form.
+
+    Rules:
+    1. Parse with tree-sitter, strip comments and docstrings.
+    2. Replace identifiers with positional placeholders (``I0``, ``I1``, …).
+       The same name within a function always maps to the same placeholder.
+       Python keywords and builtins are kept as-is (they define structure).
+    3. Replace string literals with ``S``.
+    4. Replace numeric literals with ``N``.
+    5. Keep all operators, punctuation, and keywords verbatim.
+
+    Args:
+        source_text: The raw Python source code.
+
+    Returns:
+        A structural canonical string suitable for hashing.
+    """
+    parser = _get_parser()
+    tree = parser.parse(source_text.encode("utf-8"))
+    tokens: list[str] = []
+    ident_map: dict[str, str] = {}
+    ident_counter = 0
+
+    def _walk(node: tree_sitter.Node) -> None:
+        nonlocal ident_counter
+
+        # Skip comments
+        if node.type == "comment":
+            return
+
+        # Skip docstrings
+        if node.type == "expression_statement" and node.parent and node.parent.type == "block":
+            if node.parent.named_children and node.parent.named_children[0] == node:
+                first_child = node.named_children[0] if node.named_children else None
+                if first_child and first_child.type == "string":
+                    return
+
+        # Skip decorator content (structure-irrelevant naming)
+        if node.type == "decorator":
+            tokens.append("@DECORATOR")
+            return
+
+        # Leaf nodes
+        if node.child_count == 0:
+            text = node.text.decode("utf-8").strip()
+            if not text:
+                return
+
+            # String literals → S
+            if node.type in _STRING_TYPES:
+                tokens.append("S")
+            # Number literals → N
+            elif node.type in _NUMBER_TYPES:
+                tokens.append("N")
+            # Identifiers → positional placeholder (unless keyword/builtin)
+            elif node.type in _IDENTIFIER_TYPES:
+                if text in _PYTHON_KEYWORDS or text in _BUILTIN_NAMES:
+                    tokens.append(text)
+                elif text == "self" or text == "cls":
+                    tokens.append(text)
+                else:
+                    if text not in ident_map:
+                        ident_map[text] = f"I{ident_counter}"
+                        ident_counter += 1
+                    tokens.append(ident_map[text])
+            else:
+                # Operators, punctuation, keywords
+                tokens.append(text)
+        else:
+            for child in node.children:
+                _walk(child)
+
+    _walk(tree.root_node)
+    return " ".join(tokens)
+
+
+def compute_structural_hash(source_text: str) -> str:
+    """Compute SHA-256 hash of the structural AST representation.
+
+    Two functions with identical control flow and structure but different
+    variable names, string literals, and numeric constants will produce
+    the same structural hash.
+
+    Args:
+        source_text: The raw Python source code of a LogicNode.
+
+    Returns:
+        Hex digest of SHA-256 hash of the structural canonical form.
+    """
+    canonical = _canonicalize_structural(source_text)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def compute_ast_hash(source_text: str) -> str:
     """Compute SHA-256 hash of the canonical AST representation.
 

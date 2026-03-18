@@ -27,6 +27,7 @@ from app.models.logic_models import (
 )
 from app.services.analysis.hash_identity import (
     compute_ast_hash,
+    compute_structural_hash,
     detect_signature_change,
     extract_params_detailed,
     extract_return_type,
@@ -164,11 +165,14 @@ def create_node(data: LogicNodeCreate) -> LogicNodeResponse:
     decorators_json = json.dumps(data.decorators)
     tags_json = json.dumps(data.tags)
 
+    structural_hash_val = compute_structural_hash(data.source_text)
+
     graph.query(
         lq.MERGE_LOGIC_NODE,
         params={
             "id": node_id,
             "ast_hash": ast_hash,
+            "structural_hash": structural_hash_val,
             "kind": kind,
             "name": data.name,
             "module_path": data.module_path,
@@ -304,6 +308,7 @@ def update_node(node_id: str, data: LogicNodeUpdate) -> LogicNodeResponse:
         )
 
     ast_hash = compute_ast_hash(source_text)
+    structural_hash_val = compute_structural_hash(source_text)
     signature = extract_signature_text(source_text)
     return_type = extract_return_type(source_text)
     params_raw = extract_params_detailed(source_text)
@@ -316,6 +321,7 @@ def update_node(node_id: str, data: LogicNodeUpdate) -> LogicNodeResponse:
         params={
             "id": node_id,
             "ast_hash": ast_hash,
+            "structural_hash": structural_hash_val,
             "kind": existing.kind.value,
             "name": existing.name,
             "module_path": existing.module_path,

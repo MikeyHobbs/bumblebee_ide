@@ -13,6 +13,7 @@ from __future__ import annotations
 CREATE_INDEXES = """
 CREATE INDEX FOR (n:LogicNode) ON (n.id);
 CREATE INDEX FOR (n:LogicNode) ON (n.ast_hash);
+CREATE INDEX FOR (n:LogicNode) ON (n.structural_hash);
 CREATE INDEX FOR (n:LogicNode) ON (n.name);
 CREATE INDEX FOR (n:LogicNode) ON (n.kind);
 CREATE INDEX FOR (n:LogicNode) ON (n.module_path);
@@ -36,6 +37,7 @@ INDEX_STATEMENTS: list[str] = [stmt.strip().rstrip(";") for stmt in CREATE_INDEX
 MERGE_LOGIC_NODE = """
 MERGE (n:LogicNode {id: $id})
 SET n.ast_hash = $ast_hash,
+    n.structural_hash = $structural_hash,
     n.kind = $kind,
     n.name = $name,
     n.module_path = $module_path,
@@ -497,6 +499,7 @@ BATCH_MERGE_LOGIC_NODES = """
 UNWIND $items AS item
 MERGE (n:LogicNode {id: item.id})
 SET n.ast_hash = item.ast_hash,
+    n.structural_hash = item.structural_hash,
     n.kind = item.kind,
     n.name = item.name,
     n.module_path = item.module_path,
