@@ -117,9 +117,9 @@ def import_file(
         node_id = generate_deterministic_node_id(parsed_node.name)
         ast_hash = compute_ast_hash(parsed_node.source_text)
 
-        # Skip unchanged nodes
-        existing_hash = _get_existing_hash(node_id)
-        if existing_hash == ast_hash:
+        # Skip unchanged nodes (but force update if structural_hash is missing)
+        existing_hash, existing_structural = _get_existing_hashes(node_id)
+        if existing_hash == ast_hash and existing_structural:
             name_to_id[parsed_node.name] = node_id
             continue
 
@@ -592,17 +592,32 @@ def _get_existing_hash(node_id: str) -> str | None:
     Returns:
         AST hash string, or None.
     """
+    return _get_existing_hashes(node_id)[0]
+
+
+def _get_existing_hashes(node_id: str) -> tuple[str | None, str | None]:
+    """Get the AST hash and structural hash of an existing node.
+
+    Args:
+        node_id: UUID of the node.
+
+    Returns:
+        Tuple of (ast_hash, structural_hash), either may be None.
+    """
     graph = get_graph()
     try:
         result = graph.query(
-            "MATCH (n:LogicNode {id: $id}) RETURN n.ast_hash",
+            "MATCH (n:LogicNode {id: $id}) RETURN n.ast_hash, n.structural_hash",
             params={"id": node_id},
         )
         if result.result_set:
-            return str(result.result_set[0][0])
+            row = result.result_set[0]
+            ast_h = str(row[0]) if row[0] is not None else None
+            struct_h = str(row[1]) if row[1] is not None else None
+            return (ast_h, struct_h)
     except Exception:
         pass
-    return None
+    return (None, None)
 
 
 def _infer_access(name: str) -> str:
