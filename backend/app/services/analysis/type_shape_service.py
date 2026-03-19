@@ -121,10 +121,13 @@ def create_or_get_type_shape(graph: Any, definition: dict[str, Any]) -> str:
 
 
 def compute_compatible_with_edges(graph: Any) -> int:
-    """Compute COMPATIBLE_WITH edges between structural shapes.
+    """Compute COMPATIBLE_WITH edges between TypeShapes.
 
-    A shape S1 is COMPATIBLE_WITH S2 if S1 is a superset of S2
-    (S1 has all the attrs/subscripts/methods of S2, plus more).
+    Creates edges in two cases:
+    1. Structural↔Structural: S1 COMPATIBLE_WITH S2 if S1 is a superset of S2.
+    2. Hint↔Structural: A hint shape is COMPATIBLE_WITH every structural shape
+       whose base_type matches the hint type (bridging typed variables to
+       duck-typed consumers).
 
     Args:
         graph: FalkorDB graph instance.
@@ -134,13 +137,12 @@ def compute_compatible_with_edges(graph: Any) -> int:
     """
     result = graph.query(lq.GET_ALL_TYPE_SHAPES)
     structural_shapes: list[dict[str, Any]] = []
+    hint_shapes: list[dict[str, Any]] = []
 
     for row in result.result_set:
         node = row[0]
         props = node.properties if hasattr(node, "properties") else node
         kind = props.get("kind", "")
-        if kind != "structural":
-            continue
 
         definition_str = props.get("definition", "{}")
         try:
@@ -148,15 +150,23 @@ def compute_compatible_with_edges(graph: Any) -> int:
         except (json.JSONDecodeError, TypeError):
             continue
 
-        structural_shapes.append({
-            "id": props.get("id", ""),
-            "attrs": set(definition.get("attrs", [])),
-            "subscripts": set(definition.get("subscripts", [])),
-            "methods": set(definition.get("methods", [])),
-        })
+        if kind == "structural":
+            structural_shapes.append({
+                "id": props.get("id", ""),
+                "base_type": props.get("base_type", "") or definition.get("base_type", ""),
+                "attrs": set(definition.get("attrs", [])),
+                "subscripts": set(definition.get("subscripts", [])),
+                "methods": set(definition.get("methods", [])),
+            })
+        elif kind == "hint":
+            hint_shapes.append({
+                "id": props.get("id", ""),
+                "type": definition.get("type", ""),
+            })
 
     edges_created = 0
 
+    # Structural ↔ Structural: superset relationships
     for i, s1 in enumerate(structural_shapes):
         for j, s2 in enumerate(structural_shapes):
             if i == j:
@@ -181,5 +191,94 @@ def compute_compatible_with_edges(graph: Any) -> int:
                 except Exception as exc:
                     logger.warning("COMPATIBLE_WITH edge error: %s", exc)
 
-    logger.info("Computed %d COMPATIBLE_WITH edges from %d structural shapes", edges_created, len(structural_shapes))
+    # Hint ↔ Structural: bridge typed variables to duck-typed consumers.
+    # A hint shape (e.g. pd.DataFrame) is COMPATIBLE_WITH any structural shape
+    # that was extracted from the same base type, allowing consumer discovery
+    # across the typed/untyped boundary.
+    for hint in hint_shapes:
+        hint_type = hint["type"]
+        if not hint_type:
+            continue
+        # Normalize: "pd.DataFrame" → "DataFrame", "list[str]" → "list"
+        hint_base = hint_type.split("[")[0].rsplit(".", 1)[-1].strip()
+        for structural in structural_shapes:
+            st_base = structural["base_type"]
+            if not st_base:
+                # Structural shapes without base_type are duck-typed — connect
+                # them to hints if they have any evidence at all (conservative
+                # match: any structural shape from a parameter with no base_type
+                # is a potential consumer shape)
+                continue
+            st_base_norm = st_base.split("[")[0].rsplit(".", 1)[-1].strip()
+            if hint_base.lower() == st_base_norm.lower():
+                try:
+                    graph.query(
+                        lq.EDGE_MERGE_QUERIES["COMPATIBLE_WITH"],
+                        params={
+                            "source_id": hint["id"],
+                            "target_id": structural["id"],
+                            "properties": {},
+                        },
+                    )
+                    edges_created += 1
+                except Exception as exc:
+                    logger.warning("COMPATIBLE_WITH hint→structural edge error: %s", exc)
+
+    # Also bridge structural shapes to hint shapes with matching base_type.
+    # This allows a variable with structural evidence + base_type to find
+    # consumers that accept parameters with only a type hint.
+    for structural in structural_shapes:
+        st_base = structural["base_type"]
+        if not st_base:
+            continue
+        st_base_norm = st_base.split("[")[0].rsplit(".", 1)[-1].strip()
+        for hint in hint_shapes:
+            hint_base = hint["type"].split("[")[0].rsplit(".", 1)[-1].strip()
+            if st_base_norm.lower() == hint_base.lower():
+                try:
+                    graph.query(
+                        lq.EDGE_MERGE_QUERIES["COMPATIBLE_WITH"],
+                        params={
+                            "source_id": structural["id"],
+                            "target_id": hint["id"],
+                            "properties": {},
+                        },
+                    )
+                    edges_created += 1
+                except Exception as exc:
+                    logger.warning("COMPATIBLE_WITH structural→hint edge error: %s", exc)
+
+    # Generic hint → bare hint: e.g. hint:list[str] COMPATIBLE_WITH hint:list
+    # This bridges typed generics to their bare type as weak matches.
+    bare_hints: dict[str, dict[str, Any]] = {}
+    for hint in hint_shapes:
+        hint_type = hint["type"]
+        if not hint_type or "[" in hint_type:
+            continue
+        bare_hints[hint_type.lower()] = hint
+
+    for hint in hint_shapes:
+        hint_type = hint["type"]
+        if not hint_type or "[" not in hint_type:
+            continue
+        bare_name = hint_type.split("[")[0].strip().lower()
+        bare = bare_hints.get(bare_name)
+        if bare and bare["id"] != hint["id"]:
+            try:
+                graph.query(
+                    lq.EDGE_MERGE_QUERIES["COMPATIBLE_WITH"],
+                    params={
+                        "source_id": hint["id"],
+                        "target_id": bare["id"],
+                        "properties": {"strength": "generalization"},
+                    },
+                )
+                edges_created += 1
+            except Exception as exc:
+                logger.warning("COMPATIBLE_WITH generic→bare edge error: %s", exc)
+
+    logger.info(
+        "Computed %d COMPATIBLE_WITH edges from %d structural + %d hint shapes",
+        edges_created, len(structural_shapes), len(hint_shapes),
+    )
     return edges_created

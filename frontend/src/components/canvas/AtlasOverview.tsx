@@ -7,11 +7,15 @@ import { NodeCircleProgram } from "sigma/rendering";
 import { useGraphStore } from "@/store/graphStore";
 import { useEditorStore } from "@/store/editorStore";
 import { useGraphOverview, useNodeVariables, apiFetch } from "@/api/client";
+import { useConsumerSubgraph } from "@/api/nodes";
 import { getSigmaZoomTier, labelThresholdForTier } from "@/graph/layout/semanticZoom";
 
-const VARIABLE_COLOR = "#ffd54f";
-const PARAM_COLOR = "#81d4fa";
-const ATTR_COLOR = "#ce93d8";
+const VARIABLE_COLOR = "#ffd54f";   // local / assign / mutate
+const PARAM_COLOR = "#81d4fa";      // input parameters
+const ATTR_COLOR = "#ce93d8";       // attributes
+const RETURN_COLOR = "#a5d6a7";     // return values
+const READS_COLOR = "#ffab91";      // required data (globals, reads)
+const TYPE_SHAPE_COLOR = "#4dd0e1"; // TypeShape hub nodes
 
 /** Muted pastel palette for file/class groups. */
 function generatePaletteColor(index: number): string {
@@ -43,8 +47,10 @@ function localName(qualifiedName: string): string {
   return parts[parts.length - 1] ?? qualifiedName;
 }
 
-function varColor(v: { is_parameter: boolean; is_attribute: boolean }): string {
+function varColor(v: { is_parameter: boolean; is_attribute: boolean; edge_type: string }): string {
   if (v.is_parameter) return PARAM_COLOR;
+  if (v.edge_type === "RETURNS") return RETURN_COLOR;
+  if (v.edge_type === "READS") return READS_COLOR;
   if (v.is_attribute) return ATTR_COLOR;
   return VARIABLE_COLOR;
 }
@@ -75,12 +81,14 @@ function AtlasOverview() {
   const collapseExpanded = useGraphStore((s) => s.collapseExpanded);
   const traceVariable = useGraphStore((s) => s.traceVariable);
   const clearTrace = useGraphStore((s) => s.clearTrace);
+  const showConsumers = useGraphStore((s) => s.showConsumers);
+  const consumerVariableId = useGraphStore((s) => s.consumerVariableId);
   const expandHighlight = useGraphStore((s) => s.expandHighlight);
   const openNodeView = useEditorStore((s) => s.openNodeView);
 
   // Stable refs for callbacks
-  const callbacksRef = useRef({ navigateToNode, goHome, expandNode, collapseExpanded, openNodeView, traceVariable, clearTrace, expandHighlight });
-  callbacksRef.current = { navigateToNode, goHome, expandNode, collapseExpanded, openNodeView, traceVariable, clearTrace, expandHighlight };
+  const callbacksRef = useRef({ navigateToNode, goHome, expandNode, collapseExpanded, openNodeView, traceVariable, clearTrace, showConsumers, expandHighlight });
+  callbacksRef.current = { navigateToNode, goHome, expandNode, collapseExpanded, openNodeView, traceVariable, clearTrace, showConsumers, expandHighlight };
 
   // Ref to track focused/expanded in event handlers without re-creating Sigma
   const focusRef = useRef({ focusedNodeId, expandedNodeId });
@@ -103,6 +111,17 @@ function AtlasOverview() {
 
   // For trace, re-use node variables on the traced variable's origin
   const { data: traceVariables } = useNodeVariables(tracedRealId);
+
+  // Resolve consumer variable's real ID for the type-shape consumer query
+  const consumerRealId = useMemo(() => {
+    if (!consumerVariableId) return null;
+    const graph = graphRef.current;
+    if (!graph || !graph.hasNode(consumerVariableId)) return null;
+    const attrs = graph.getNodeAttributes(consumerVariableId);
+    return (typeof attrs.realNodeId === "string" ? attrs.realNodeId : null);
+  }, [consumerVariableId]);
+
+  const { data: consumerSubgraph } = useConsumerSubgraph(consumerRealId);
 
   const overviewNodes = overview?.nodes ?? [];
   const overviewEdges = overview?.edges ?? [];
@@ -423,6 +442,159 @@ function AtlasOverview() {
     sigmaRef.current?.refresh();
   }, [tracedVariableId, traceVariables]);
 
+  // Handle consumer highlight: show TypeShape subgraph + highlight consumer functions
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+
+    // Clean up any previous TypeShape nodes when consumerVariableId changes
+    const toRemove: string[] = [];
+    graph.forEachNode((node, attrs) => {
+      if (attrs.isTypeShape) toRemove.push(node);
+    });
+    for (const nodeId of toRemove) {
+      graph.dropNode(nodeId);
+    }
+
+    if (!consumerVariableId || !consumerSubgraph) {
+      sigmaRef.current?.refresh();
+      return;
+    }
+
+    // Collect highlighted node IDs
+    const matched = new Set<string>();
+    matched.add(consumerVariableId); // include the source variable itself
+
+    // Get source variable position for TypeShape placement
+    const varAttrs = graph.hasNode(consumerVariableId)
+      ? graph.getNodeAttributes(consumerVariableId)
+      : null;
+    const varX = (varAttrs?.x as number) ?? 0;
+    const varY = (varAttrs?.y as number) ?? 0;
+    const varName = typeof varAttrs?.label === "string" ? varAttrs.label : "variable";
+
+    // Compute graph extent for sizing the TypeShape orbit
+    let gMinX = Infinity, gMaxX = -Infinity, gMinY = Infinity, gMaxY = -Infinity;
+    graph.forEachNode((_, a) => {
+      const nx = a.x as number;
+      const ny = a.y as number;
+      if (nx < gMinX) gMinX = nx;
+      if (nx > gMaxX) gMaxX = nx;
+      if (ny < gMinY) gMinY = ny;
+      if (ny > gMaxY) gMaxY = ny;
+    });
+    const graphSpan = Math.max(gMaxX - gMinX, gMaxY - gMinY) || 100;
+    const tsRadius = graphSpan * 0.04;
+
+    // Add TypeShape hub nodes to graphology
+    const tsAngleStep = consumerSubgraph.type_shapes.length > 0
+      ? (2 * Math.PI) / consumerSubgraph.type_shapes.length
+      : 0;
+
+    for (let i = 0; i < consumerSubgraph.type_shapes.length; i++) {
+      const ts = consumerSubgraph.type_shapes[i]!;
+      const tsNodeId = `ts:${ts.id}`;
+      if (graph.hasNode(tsNodeId)) continue;
+
+      const angle = tsAngleStep * i - Math.PI / 2;
+      const label = ts.base_type || "TypeShape";
+
+      graph.addNode(tsNodeId, {
+        x: varX + tsRadius * Math.cos(angle),
+        y: varY + tsRadius * Math.sin(angle),
+        size: 2,
+        color: TYPE_SHAPE_COLOR,
+        originalColor: TYPE_SHAPE_COLOR,
+        label,
+        kind: "type_shape",
+        isVariable: false,
+        isTypeShape: true,
+        fixed: true,
+      });
+      matched.add(tsNodeId);
+    }
+
+    // Build confidence map from consumer data
+    const confidenceMap = new Map<string, "exact" | "structural" | "weak">();
+    for (const cn of consumerSubgraph.consumers) {
+      confidenceMap.set(cn.id, cn.confidence ?? "structural");
+    }
+
+    // Add consumer functions to highlight set, with confidence on graph nodes
+    for (const cn of consumerSubgraph.consumers) {
+      if (graph.hasNode(cn.id)) {
+        matched.add(cn.id);
+        const conf = cn.confidence ?? "structural";
+        graph.setNodeAttribute(cn.id, "confidence", conf);
+        // Weak matches get reduced alpha
+        if (conf === "weak") {
+          const orig = graph.getNodeAttribute(cn.id, "originalColor") as string;
+          graph.setNodeAttribute(cn.id, "color", (orig || "#888") + "88");
+        }
+      }
+    }
+
+    // Add edges from the subgraph
+    for (const edge of consumerSubgraph.edges) {
+      // Map IDs: variables use var: prefix, type shapes use ts: prefix
+      let sourceId = edge.source;
+      let targetId = edge.target;
+
+      if (edge.type === "HAS_SHAPE") {
+        sourceId = consumerVariableId; // already prefixed as var:xxx
+        targetId = `ts:${edge.target}`;
+      } else if (edge.type === "COMPATIBLE_WITH") {
+        sourceId = `ts:${edge.source}`;
+        targetId = `ts:${edge.target}`;
+      } else if (edge.type === "ACCEPTS") {
+        sourceId = edge.source; // LogicNode ID (no prefix)
+        targetId = `ts:${edge.target}`;
+      }
+
+      if (graph.hasNode(sourceId) && graph.hasNode(targetId)) {
+        try {
+          let edgeColor: string;
+          let edgeSize: number;
+          if (edge.type === "HAS_SHAPE") {
+            edgeColor = TYPE_SHAPE_COLOR + "88";
+            edgeSize = 1;
+          } else if (edge.type === "ACCEPTS") {
+            // Vary by consumer confidence
+            const conf = confidenceMap.get(edge.source) ?? "structural";
+            if (conf === "exact") {
+              edgeColor = "#a5d6a7cc";
+              edgeSize = 1.5;
+            } else if (conf === "weak") {
+              edgeColor = "#a5d6a744";
+              edgeSize = 0.5;
+            } else {
+              edgeColor = "#a5d6a788";
+              edgeSize = 1.0;
+            }
+          } else {
+            edgeColor = "#ffffff44";
+            edgeSize = 1;
+          }
+          graph.addEdge(sourceId, targetId, {
+            color: edgeColor,
+            size: edgeSize,
+            edgeType: edge.type,
+            isTypeShape: true,
+          });
+        } catch {
+          // skip duplicate edges
+        }
+      }
+    }
+
+    useGraphStore.setState({
+      highlightedNodeIds: matched,
+      queryHighlightLabel: `Consumers of ${varName}`,
+    });
+
+    sigmaRef.current?.refresh();
+  }, [consumerVariableId, consumerSubgraph]);
+
   // Sync highlight ref and animate camera to fit highlighted nodes
   useEffect(() => {
     const wasEmpty = highlightRef.current.size === 0;
@@ -622,8 +794,16 @@ function AtlasOverview() {
         // Query highlight mode
         if (highlightIds.size > 0) {
           if (highlightIds.has(node)) {
-            res.highlighted = true;
-            res.zIndex = 2;
+            const conf = data.confidence as string | undefined;
+            if (conf === "weak") {
+              const orig = (data.originalColor as string) || "#888";
+              res.color = orig + "88";
+              res.highlighted = true;
+              res.zIndex = 1;
+            } else {
+              res.highlighted = true;
+              res.zIndex = 2;
+            }
           } else {
             res.color = "rgba(60,60,60,0.12)";
             res.label = "";
@@ -840,7 +1020,7 @@ function AtlasOverview() {
       const attrs = graphRef.current?.getNodeAttributes(node);
 
       if (attrs?.isVariable) {
-        callbacksRef.current.traceVariable(node);
+        callbacksRef.current.showConsumers(node);
         return;
       }
 

@@ -56,3 +56,38 @@ export function useNodeVariables(nodeId: string | null) {
     enabled: nodeId !== null,
   });
 }
+
+export interface ConsumerNode {
+  id: string;
+  name: string;
+  kind: string;
+  module_path: string;
+  signature: string;
+  confidence: "exact" | "structural" | "weak";
+}
+
+export interface TypeShapeNode {
+  id: string;
+  base_type: string;
+  definition: string;
+}
+
+export interface ConsumerSubgraphEdge {
+  source: string;
+  target: string;
+  type: string;
+}
+
+export interface ConsumerSubgraph {
+  type_shapes: TypeShapeNode[];
+  consumers: ConsumerNode[];
+  edges: ConsumerSubgraphEdge[];
+}
+
+export function useConsumerSubgraph(variableId: string | null) {
+  return useQuery({
+    queryKey: ["consumer-subgraph", variableId],
+    queryFn: () => apiFetch<ConsumerSubgraph>(`/api/v1/type-shapes/${variableId!}/consumer-subgraph`),
+    enabled: variableId !== null,
+  });
+}

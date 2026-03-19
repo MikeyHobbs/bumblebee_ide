@@ -112,3 +112,8 @@ vfs MATCH (n:LogicNode)-[r]-(neighbor:LogicNode) WHERE n.name CONTAINS 'import_f
 
 -- Project all active nodes (full VFS snapshot)
 vfs MATCH (n:LogicNode {status: 'active'}) RETURN n
+
+// Find all functions that accept an Event type
+MATCH (fn:LogicNode)-[:ACCEPTS]->(ts:TypeShape)
+WHERE ts.base_type = 'Event'
+RETURN fn.name, fn.module_path, ts.kind, ts.definition

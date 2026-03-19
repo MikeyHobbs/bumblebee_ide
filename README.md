@@ -250,13 +250,18 @@ The code-as-data architecture is fully functional. A Python codebase can be impo
 
 ## Documentation
 
-- [Architecture Decisions](docs/decisions.md)
-- [Graph Schema Specification](docs/schema.md)
-- [Ticket Backlog](docs/tickets.md)
-- [Coding Standards](docs/coding_standards.md)
-- [Styling Guide](docs/styling.md)
-- [Code Generation Limitations](docs/codegen-limitations.md)
-- [Manifesto](docs/manifesto.md)
+- [Core Architecture](docs/arch.core.md)
+- [Compose & TypeShape Architecture](docs/arch.compose.md)
+- [BYOM Agent Architecture](docs/arch.agent-model.md)
+- [Technology Stack](docs/tech.stack.md)
+- [Graph Schema Specification](docs/spec.schema.md)
+- [Ticket Backlog](docs/project.tickets.md)
+- [Python Coding Standards](docs/standards.python.md)
+- [Design System](docs/design.system.md)
+- [Code Generation Limitations](docs/subsystem.codegen-limitations.md)
+- [VFS Compose Design](docs/subsystem.vfs-compose.md)
+- [Type Inference Strategy](docs/subsystem.type-inference.md)
+- [Manifesto](docs/vision.manifesto.md)
 
 ## License
 

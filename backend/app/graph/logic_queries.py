@@ -869,13 +869,28 @@ MERGE (s)-[r:COMPATIBLE_WITH]->(t)
 
 FIND_CONSUMERS_FOR_VARIABLE = """
 MATCH (v:Variable {id: $variable_id})-[:HAS_SHAPE]->(ts:TypeShape)
-OPTIONAL MATCH (ts)<-[:COMPATIBLE_WITH*0..1]-(cts:TypeShape)
-WITH collect(ts) + collect(cts) AS shapes
+OPTIONAL MATCH (ts)-[:COMPATIBLE_WITH*0..2]->(cts:TypeShape)
+WITH collect(DISTINCT ts) + collect(DISTINCT cts) AS shapes
 UNWIND shapes AS s
 MATCH (fn:LogicNode)-[:ACCEPTS]->(s)
 WHERE fn.status = 'active'
 RETURN DISTINCT fn
 """
+
+FIND_CONSUMER_SUBGRAPH_FOR_VARIABLE = """
+MATCH (v:Variable {id: $variable_id})-[:HAS_SHAPE]->(ts:TypeShape)
+OPTIONAL MATCH (ts)-[:COMPATIBLE_WITH*0..2]->(cts:TypeShape)
+WITH v, ts, collect(DISTINCT cts) AS compat_shapes
+WITH v, ts, [s IN compat_shapes WHERE s IS NOT NULL] + [ts] AS all_shapes
+UNWIND all_shapes AS s
+OPTIONAL MATCH (fn:LogicNode)-[:ACCEPTS]->(s)
+WHERE fn.status = 'active'
+WITH v, ts, s, collect(DISTINCT fn) AS consumers
+RETURN ts.id AS ts_id, ts.base_type AS ts_base_type, ts.definition AS ts_definition,
+       s.id AS shape_id, s.base_type AS shape_base_type, s.definition AS shape_definition,
+       [c IN consumers | {id: c.id, name: c.name, kind: c.kind, module_path: c.module_path, signature: c.signature}] AS consumers
+"""
+
 
 FIND_PRODUCERS_FOR_NODE = """
 MATCH (fn:LogicNode {id: $node_id})-[:ACCEPTS]->(ts:TypeShape)

@@ -4,7 +4,7 @@ These tests verify that the code generator produces valid Python from the
 extraction pipeline output. The generated code is validated using tree-sitter
 to ensure it parses without syntax errors.
 
-Known limitations (documented in docs/codegen-limitations.md):
+Known limitations (documented in docs/subsystem.codegen-limitations.md):
 - Comments are lost (tree-sitter does not preserve comments in named nodes)
 - Blank lines between statements may differ from the original
 - Formatting may differ (indentation is reconstructed, not preserved byte-for-byte)

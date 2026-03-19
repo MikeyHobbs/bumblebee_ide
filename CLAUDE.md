@@ -103,14 +103,14 @@ make test      # test backend
 
 ## Key Technical Decisions
 
-All architecture decisions are documented in `docs/decisions.md`. Graph schema is in `docs/schema.md`. Key points:
+Architecture decisions are documented in `docs/arch.core.md`, `docs/arch.compose.md`, and `docs/tech.stack.md`. Graph schema is in `docs/spec.schema.md`. Key points:
 
-- **Build order (800-series):** Phase 0 (foundation) → Phase 1 (CRUD) → Phase 3 (import) → Phase 2 (serialization) → Phase 4 (VFS) → Phase 5 (flows) → Phase 6 (frontend) → Phase 7 (agent). See `docs/tickets.md` for details.
+- **Build order (800-series):** Phase 0 (foundation) → Phase 1 (CRUD) → Phase 3 (import) → Phase 2 (serialization) → Phase 4 (VFS) → Phase 5 (flows) → Phase 6 (frontend) → Phase 7 (agent). See `docs/project.tickets.md` for details.
 - **Sigma.js** — replaced React Flow for knowledge-graph view. Uses graphology + ForceAtlas2 worker. Incremental graph sync (no full rebuild on node add/remove).
 - **Compose editor** — multi-tab Monaco surface with Cmd+S parse/save to graph. Compose buffers use `__compose__.{tabId}` as module_path.
 - **VFS query** — `vfs MATCH ...` in TerminalChat runs Cypher, opens matched functions in a compose tab, and projects modules to `.bumblebee/vfs/`.
 - **Ollama** for local LLM with OpenAI-compatible tool-use format. Cloud fallback via `ModelAdapter` interface.
 - **Pydantic Settings v2** for all config. Import `settings` from `app.config`. Never read `os.environ` directly.
 - **FalkorDB** singleton client via FastAPI lifespan. Graph name: `bumblebee`.
-- **No CSS Modules/styled-components** — Tailwind only. Design tokens from `docs/styling.md`.
+- **No CSS Modules/styled-components** — Tailwind only. Design tokens from `docs/design.system.md`.
 - **`uv`** for all Python env/dependency management. No `pip` directly.

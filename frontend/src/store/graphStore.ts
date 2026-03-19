@@ -28,6 +28,7 @@ interface GraphState {
   focusedNodeId: string | null;
   expandedNodeId: string | null;
   tracedVariableId: string | null;
+  consumerVariableId: string | null;
 
   // Query results (highlight mode)
   queryHighlightLabel: string | null;
@@ -56,6 +57,7 @@ interface GraphState {
   collapseExpanded: () => void;
   traceVariable: (variableId: string) => void;
   clearTrace: () => void;
+  showConsumers: (variableId: string) => void;
 
   // Query result (highlight on Sigma canvas)
   showQueryResult: (label: string, nodes: GraphNode[], edges: GraphEdge[]) => void;
@@ -86,6 +88,7 @@ export const useGraphStore = create<GraphState>((set) => ({
   focusedNodeId: null,
   expandedNodeId: null,
   tracedVariableId: null,
+  consumerVariableId: null,
   breadcrumb: [{ viewMode: "knowledge-graph", label: "Graph", nodeId: null, focusedNodeId: null }],
 
   selectNode: (nodeId) => set({ selectedNodeId: nodeId }),
@@ -175,6 +178,7 @@ export const useGraphStore = create<GraphState>((set) => ({
       focusedNodeId: null,
       expandedNodeId: null,
       tracedVariableId: null,
+      consumerVariableId: null,
       highlightedNodeIds: new Set<string>(),
       queryHighlightLabel: null,
       breadcrumb: [{ viewMode: "knowledge-graph", label: "Graph", nodeId: null, focusedNodeId: null }],
@@ -189,7 +193,9 @@ export const useGraphStore = create<GraphState>((set) => ({
 
   traceVariable: (variableId) => set({ tracedVariableId: variableId }),
 
-  clearTrace: () => set({ tracedVariableId: null }),
+  clearTrace: () => set({ tracedVariableId: null, consumerVariableId: null }),
+
+  showConsumers: (variableId) => set({ consumerVariableId: variableId, tracedVariableId: null }),
 
   showQueryResult: (label, nodes, edges) =>
     set((state) => ({
