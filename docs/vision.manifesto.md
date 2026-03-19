@@ -22,6 +22,16 @@ Bumblebee inverts the traditional relationship between code and its representati
 - **Humans read projected files** in a virtual filesystem (VFS), using familiar tools — editors, linters, debuggers — on output that is regenerated from the graph.
 - **Git stores the serialized graph** as JSON files, giving human-readable diffs and standard version control.
 
+### The Language
+
+Follow the inversion to its logical conclusion: if the graph is the source of truth and files are compiled output, then Bumblebee is not a tool — it is a **graph-native programming language that transpiles to Python**.
+
+It has all four properties of a language: a defined set of primitives (LogicNodes — functions, classes, modules), composition rules (typed edges: CALLS, INHERITS, USES), a way to express new programs (composing nodes in the graph, wiring flows), and execution semantics (codegen to Python, then run). The graph schema is the grammar. Cypher queries are metaprogramming. The compose editor is the authoring surface.
+
+The distinction matters. "A visual tool that generates Python" implies the Python files are the real thing and the graph is a convenience layer. But in Bumblebee, the graph *is* the program. Files are one possible compilation target — Python today, but nothing prevents targeting TypeScript, Go, or any other runtime tomorrow. This is the same relationship that Kotlin has to JVM bytecode, or TypeScript has to JavaScript: the higher-level representation is the source, the lower-level output is the artifact.
+
+What makes this novel is not compilation — every language compiles. It is that the **canonical source representation is a property graph, not text**. Source code has been text files for sixty years. Bumblebee proposes that for the age of AI agents, a structured graph is a better canonical form — one that is queryable, composable, and machine-native, while still projecting to human-readable text on demand.
+
 ### The Question That Matters
 
 The hardest question in any large codebase is not "where is this function?" but **"what happens to this data?"** A variable is created, passed through arguments, mutated by methods, aliased into new names, and eventually consumed — often across dozens of functions. No existing tool makes that journey visible. Bumblebee does — in one query, in milliseconds.
@@ -77,7 +87,29 @@ Every variable is a first-class node in the graph. When a LogicNode is created o
 
 A single Cypher query returns the **full mutation timeline** of any variable: from its origin, through every transformation, to its final consumption — across function and file boundaries. This is the query that no text-based search can replicate.
 
-### 3.3 Atomic GraphRAG — Query the Graph, Assemble the Answer
+### 3.3 Structural Type Compatibility — If It Quacks Like a Duck
+
+Type annotations lie. They are incomplete, inconsistent, and frequently absent. In real codebases, half the parameters are `Any`, a quarter are wrong, and the rest were correct when they were written six months ago. Basing type compatibility on annotations alone means trusting the least reliable signal in the codebase.
+
+Bumblebee doesn't ask what a variable *says* it is. It observes what the code *does* with it.
+
+When code accesses `user.name` and `user.email`, the graph records that evidence — this variable structurally requires `name` and `email` attributes. When code calls `items.append(x)`, the graph knows `items` behaves like a list. When a function parameter is used as `config["timeout"]`, the graph knows it needs to support subscript access. This is duck typing elevated to a graph primitive: **if it quacks like a duck, the graph knows it's a duck.**
+
+This evidence is captured in **TypeShape** nodes — structural type descriptions that live in the graph as hubs. Multiple variables connect to the same TypeShape when they share the same structural behavior. Multiple functions connect to TypeShapes via `ACCEPTS` edges when their parameters require those capabilities. Type compatibility becomes a graph traversal, not a string comparison:
+
+```
+MATCH (v)-[:HAS_SHAPE]->(shape)<-[:ACCEPTS]-(fn)
+WHERE v.name = 'user_data'
+RETURN fn
+```
+
+One hop. Every function in the codebase that can accept this variable. No scanning, no JSON comparison, no LLM guessing.
+
+The key insight is that **structural compatibility is precomputed**. When shapes are created during import, `COMPATIBLE_WITH` edges are computed between shapes that are structural subtypes of each other — shape A is compatible with shape B if A has all the attributes B requires. This turns the compose suggestion query ("what functions can I wire this variable into?") from an O(n*m) comparison into a constant-time edge traversal.
+
+This matters because the compose editor — where users assemble new logic by wiring existing functions together — needs to answer compatibility questions interactively. The duck typing philosophy makes this instant: the graph already knows what quacks like what.
+
+### 3.4 Atomic GraphRAG — Query the Graph, Assemble the Answer
 
 This is the core of what makes Bumblebee an infrastructure layer, not just a visualization tool.
 
@@ -94,7 +126,7 @@ A Logic Pack for a variable mutation query includes every function that touches 
 
 **The performance difference is not marginal — it is structural.** An MCP-based agent making 8 round trips at 2,000 tokens each consumes 16,000 tokens and takes seconds. Bumblebee returns the same answer in one query at ~3,000 tokens in milliseconds. At enterprise scale (10,000+ agent queries per day), this translates to 10-20x reduction in LLM API cost and dramatically higher accuracy because the graph traversal is exhaustive — it never misses a branch.
 
-### 3.4 Graph-to-Git Serialization
+### 3.5 Graph-to-Git Serialization
 
 The graph serializes to a `.bumblebee/` directory structure:
 
@@ -116,7 +148,7 @@ The graph serializes to a `.bumblebee/` directory structure:
 
 Both the JSON graph data and the VFS files are committed to Git. This gives two complementary views in every PR: the structural graph diff (which nodes/edges changed) and the familiar Python diff (what the code looks like). The VFS is not a build artifact — it's a first-class, editable representation of the graph.
 
-### 3.5 Composable Flows — Hierarchy of Calls
+### 3.6 Composable Flows — Hierarchy of Calls
 
 Flows are not just documentation — they are **reusable, composable units of logic**. A flow is an ordered sequence of LogicNode calls that represents an end-to-end process. Crucially:
 
@@ -126,7 +158,7 @@ Flows are not just documentation — they are **reusable, composable units of lo
 
 The `CONTAINS_FLOW` edge connects a parent flow to its sub-flows. The `STEP_OF` edge connects LogicNodes to the flows they participate in. Together, these edges represent the full call hierarchy — from high-level workflows down to individual functions.
 
-### 3.6 Agent-Native Interface
+### 3.7 Agent-Native Interface
 
 Agents interact with the graph through typed tools, not file I/O:
 

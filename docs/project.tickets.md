@@ -35,14 +35,14 @@
 **Goal:** Define the new graph schema (LogicNode, Variable, Flow labels) and implement all core Cypher query templates.
 
 **Tasks:**
-- Define index creation queries per `docs/schema.md` Section 5.
+- Define index creation queries per `spec.schema.md` Section 5.
 - Implement MERGE/CREATE templates for LogicNode, Variable, and Flow nodes.
 - Implement edge creation templates for all 14 edge types (CALLS, DEPENDS_ON, IMPLEMENTS, VALIDATES, TRANSFORMS, INHERITS, MEMBER_OF, ASSIGNS, MUTATES, READS, RETURNS, PASSES_TO, FEEDS, STEP_OF).
-- Implement the mutation timeline query (schema.md Section 6.1).
-- Implement the dependency subgraph query (schema.md Section 6.2).
-- Implement the deduplication check query (schema.md Section 6.3).
-- Implement the impact analysis query (schema.md Section 6.4).
-- Implement the flow traversal query (schema.md Section 6.5).
+- Implement the mutation timeline query (spec.schema.md Section 6.1).
+- Implement the dependency subgraph query (spec.schema.md Section 6.2).
+- Implement the deduplication check query (spec.schema.md Section 6.3).
+- Implement the impact analysis query (spec.schema.md Section 6.4).
+- Implement the flow traversal query (spec.schema.md Section 6.5).
 - Implement node deletion (soft delete: set `status = 'deprecated'`).
 
 **Acceptance Criteria:**
@@ -76,7 +76,7 @@
 - All models use `kind` enums: `LogicNodeKind` (`function`, `method`, `class`, `constant`, `type_alias`, `flow_function`), `EdgeType`, `MutationKind`, `ParamKind`.
 
 **Acceptance Criteria:**
-- All models validate correctly with example data from `docs/schema.md`.
+- All models validate correctly with example data from `spec.schema.md`.
 - Enum validation rejects invalid `kind` and `edge_type` values.
 - `LogicNodeCreate` auto-generates `id` and `ast_hash` via validators.
 - All datetime fields use ISO 8601 format.
@@ -148,7 +148,7 @@
 
 **Tasks:**
 - `get_variable_timeline(variable_id: str) -> MutationTimeline`:
-  - Execute the mutation timeline Cypher query (schema.md Section 6.1).
+  - Execute the mutation timeline Cypher query (spec.schema.md Section 6.1).
   - Return structured response: origin LogicNode + ASSIGNS edge, list of MUTATES edges with their LogicNodes, list of READS edges, PASSES_TO chains, FEEDS edges, terminal node (last consumer).
 - `trace_variable(name: str, scope: str | None) -> list[MutationTimeline]`:
   - Find Variable nodes matching name (optionally scoped).
@@ -223,7 +223,7 @@
 **Acceptance Criteria:**
 - Full serialization of a 500-node graph completes in < 2 seconds.
 - Incremental serialization of 5 changed nodes completes in < 200ms.
-- Output matches the format in `docs/schema.md` Section 4.
+- Output matches the format in `spec.schema.md` Section 4.
 - Running serialization twice without changes produces zero Git diff.
 
 ---
@@ -647,7 +647,7 @@
 
 ## Phase 8: Documentation — IN PROGRESS
 
-### TICKET-880: Rewrite `docs/manifesto.md` — DONE
+### TICKET-880: Rewrite `docs/vision.manifesto.md` — DONE
 
 **Goal:** Replace the existing manifesto with the Code-as-Data vision.
 
@@ -657,7 +657,7 @@
 
 ---
 
-### TICKET-881: Update `docs/decisions.md` — BACKLOG
+### TICKET-881: Update `docs/arch.core.md + docs/arch.compose.md + docs/tech.stack.md` — BACKLOG
 
 **Goal:** Add new architecture decisions for the Code-as-Data refactor.
 
@@ -667,17 +667,17 @@
 
 ---
 
-### TICKET-882: Replace `docs/tickets.md` — DONE
+### TICKET-882: Replace `docs/project.tickets.md` — DONE
 
 **Goal:** Replace the existing ticket backlog with the 800-series phased plan.
 
 **Content:** Full acceptance criteria for all tickets across 8 phases.
 
-**Acceptance Criteria:** Tickets reference `docs/schema.md` for format specs. Execution order is clear.
+**Acceptance Criteria:** Tickets reference `spec.schema.md` for format specs. Execution order is clear.
 
 ---
 
-### TICKET-883: Create `docs/schema.md` — DONE
+### TICKET-883: Create `spec.schema.md` — DONE
 
 **Goal:** Full JSON schema specification for the `.bumblebee/` serialization format.
 
@@ -766,7 +766,7 @@ THIS TICKET IS IN DEVELOPMENT AND NEEDS FLESHING OUT
 
 > **Core principle:** The graph becomes a live, editable surface. Users author new logic (Compose Tab) and assemble existing logic (Virtual Script View) through the same editor. Deterministic graph queries drive suggestions; LLM judges compatibility.
 
-See `docs/vfs_compose_plan.md` for the full design document.
+See `docs/subsystem.vfs-compose.md` for the full design document.
 
 ---
 
