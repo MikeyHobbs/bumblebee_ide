@@ -1232,6 +1232,78 @@ See `docs/vfs_compose_plan.md` for the full design document.
 
 ---
 
+## Phase 15: TypeShape — Structural Type Inference (960-Series)
+
+### TICKET-960: TypeShape Graph Schema + Cypher Queries — DONE
+
+**File:** `backend/app/graph/logic_queries.py`
+
+**Goal:** Define TypeShape node indexes and all MERGE/GET/BATCH Cypher templates, plus HAS_SHAPE, ACCEPTS, PRODUCES, COMPATIBLE_WITH edge queries.
+
+---
+
+### TICKET-961: ShapeEvidence Extraction from Variable Usage — DONE
+
+**File:** `backend/app/services/parsing/variable_extractor.py`
+
+**Goal:** Collect structural evidence (attribute access, subscript access, method calls) from AST during variable extraction. Produces `ShapeEvidence` dataclass per variable.
+
+---
+
+### TICKET-962: TypeShape Builder Service — DONE
+
+**File:** `backend/app/services/analysis/type_shape_service.py` (new)
+
+**Goal:** Build TypeShape definitions from ShapeEvidence, compute deterministic shape_hash (SHA-256), determine kind (primitive/generic/structural/hint), and compute COMPATIBLE_WITH edges between shapes.
+
+---
+
+### TICKET-963: TypeShape Integration in Import Pipeline — DONE
+
+**File:** `backend/app/services/persistence/import_pipeline.py`
+
+**Goal:** Create TypeShape nodes and HAS_SHAPE/ACCEPTS/PRODUCES edges during file import. Run COMPATIBLE_WITH computation after batch import.
+
+---
+
+### TICKET-964: TypeShape Serialization — DONE
+
+**File:** `backend/app/services/persistence/serializer.py`
+
+**Goal:** Serialize TypeShape nodes to `.bumblebee/type_shapes/<shape_hash>.json`.
+
+---
+
+### TICKET-965: TypeShape Deserialization — DONE
+
+**File:** `backend/app/services/persistence/deserializer.py`
+
+**Goal:** Deserialize TypeShape nodes from `.bumblebee/type_shapes/` back into FalkorDB on load.
+
+---
+
+### TICKET-966: TypeShape REST API — DONE
+
+**File:** `backend/app/routers/type_shapes.py` (new)
+
+**Goal:** Expose TypeShape queries via REST: consumers by variable, producers by node, search by attributes, detail by shape ID.
+
+**Endpoints:**
+- `GET /api/v1/type-shapes/{variable_id}/consumers`
+- `GET /api/v1/type-shapes/{node_id}/producers`
+- `GET /api/v1/type-shapes/search?attrs=name,email`
+- `GET /api/v1/type-shapes/detail/{shape_id}`
+
+---
+
+### TICKET-967: TypeShape Pydantic Models + Tests — DONE
+
+**Files:** `backend/app/models/logic_models.py`, `backend/tests/test_type_shapes.py` (new)
+
+**Goal:** Add TypeShapeResponse model, extend EdgeType enum with HAS_SHAPE/ACCEPTS/PRODUCES/COMPATIBLE_WITH. 30 tests covering shape building, hashing, compatibility, serialization round-trip, and API endpoints.
+
+---
+
 ## Execution Order
 
 ```
@@ -1251,7 +1323,11 @@ Phase 13 (Frontend Virtual Script) ← depends on Phase 9 + 12    │
   940 Tab creation, 941 Gap highlights, 942 Save Flow, 943 Toggle│
                                                                   │
 Phase 14 (LLM Layer) ← depends on Phase 11 + Phase 13           │
-  950 Suggestion evaluator, 951 Assembly review, 952 Type inference
+  950 Suggestion evaluator, 951 Assembly review, 952 Type inference│
+                                                                  │
+Phase 15 (TypeShape) ← depends on Phase 10 (Variable extraction) │
+  960 Schema, 961 Evidence, 962 Builder, 963 Import, 964-965 Serde│
+  966 API, 967 Models+Tests                                       │
 ```
 
 **Recommended build order:**

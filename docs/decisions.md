@@ -566,3 +566,44 @@ The assembler:
 
 - **Why not a second view:** Maintaining two graph renderers doubles complexity. A lens on the single view is simpler and lets users toggle between focused (compose) and full (explore) modes naturally.
 - **Implementation:** Reuse the existing `nodeReducer`/`edgeReducer` pattern from query result highlighting. A `composeContextNodeIds` set drives the lens.
+
+---
+
+## 13. TypeShape: Structural Type Inference (960-Series)
+
+### 13.1 TypeShape as a Hub Node, Not a Property
+
+**Decision: Structural types are first-class graph nodes (TypeShape), not properties on Variable or LogicNode.**
+
+TypeShape nodes act as hubs that multiple variables and functions connect to. This turns type compatibility from O(n*m) pairwise property comparison into O(1) graph traversal via shared shape nodes and COMPATIBLE_WITH edges.
+
+| Approach | Complexity | Query pattern |
+|----------|-----------|---------------|
+| Type as property on Variable | O(n*m) — compare every variable pair | String matching on JSON blobs |
+| TypeShape as hub node | O(1) — follow edges | `MATCH (v)-[:HAS_SHAPE]->(s)<-[:ACCEPTS]-(fn)` |
+
+- **Why hub node:** The compose suggestion pipeline needs to answer "which functions can consume this variable?" instantly. With TypeShape as a hub, this is a single edge traversal. With types as properties, it requires scanning all functions and comparing JSON definitions.
+- **Why UUID5 (not UUID7):** TypeShape identity is deterministic from content (shape_hash). UUID5 with a fixed namespace ensures the same shape always gets the same ID, enabling natural deduplication via MERGE.
+
+### 13.2 Evidence-Based Shape Inference
+
+**Decision: Shapes are inferred from usage evidence (attribute access, subscript access, method calls), not solely from type annotations.**
+
+| Evidence source | Example | Inferred shape |
+|----------------|---------|----------------|
+| Attribute access | `user.name`, `user.email` | `structural: {attrs: [name, email]}` |
+| Subscript access | `data["key"]` | `generic: dict` |
+| Method call | `items.append(x)` | `generic: list` |
+| Type annotation | `x: str` | `hint: str` |
+
+- **Why evidence over annotations:** Real codebases are inconsistently annotated. Evidence from actual usage captures what the code *needs*, not what the developer remembered to declare. A variable accessed as `obj.name` and `obj.email` structurally requires those attributes — this is more useful for compose suggestions than a missing or overly broad annotation.
+- **No evidence = no shape:** Variables with no usage evidence and no type annotation get no TypeShape node. This avoids polluting the graph with meaningless `Any` shapes.
+
+### 13.3 COMPATIBLE_WITH as Precomputed Subtyping
+
+**Decision: Shape compatibility (structural subtyping) is precomputed as COMPATIBLE_WITH edges, not evaluated at query time.**
+
+A TypeShape A is COMPATIBLE_WITH TypeShape B if A is a structural superset of B — i.e., A has all the attributes/capabilities that B requires. This is computed once after import and stored as a directed edge.
+
+- **Why precompute:** The compose suggestion query (`"which functions can accept this variable?"`) runs interactively. Computing structural subtyping at query time would add latency proportional to the number of shapes. Precomputed edges make it constant-time.
+- **Recomputation trigger:** COMPATIBLE_WITH edges are recomputed when new TypeShape nodes are created (during import or compose save). This is incremental — only new shapes need comparison against existing ones.

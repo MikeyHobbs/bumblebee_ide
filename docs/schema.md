@@ -66,7 +66,24 @@ The atomic unit of data flow. Derived from LogicNode analysis.
 | `is_attribute` | `bool` | Yes | True if this is an instance/class attribute (e.g., `self.x`) |
 | `created_at` | `datetime (ISO 8601)` | Yes | When the variable node was created |
 
-### 1.3 Flow
+### 1.3 TypeShape (Tier 1.5)
+
+A structural type descriptor inferred from usage evidence. TypeShape is a hub node — variables and functions link to it, turning type compatibility from O(n*m) property comparison into O(1) graph traversal.
+
+**FalkorDB Label:** `TypeShape`
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `id` | `string (UUID5)` | Yes | Deterministic from `shape_hash` (namespace UUID5) |
+| `shape_hash` | `string (SHA-256)` | Yes | Hash of the canonical `definition` JSON |
+| `kind` | `enum` | Yes | One of: `primitive`, `generic`, `structural`, `hint` |
+| `base_type` | `string` | No | Base type name (e.g., `list`, `dict`, `str`) |
+| `definition` | `string (JSON)` | Yes | Canonical JSON describing the shape structure |
+| `created_at` | `datetime (ISO 8601)` | Yes | When the shape was first created |
+
+**Shape inference:** Shapes are inferred from usage evidence (attribute access, subscript access, method calls) rather than relying solely on type annotations. Variables with no evidence get no TypeShape.
+
+### 1.4 Flow
 
 A named, curated end-to-end process through the graph.
 
@@ -122,7 +139,16 @@ A named, curated end-to-end process through the graph.
 
 `via` is one of: `assignment`, `mutation_arg`, `call_arg`, `call_return`.
 
-### 2.4 Flow Edges
+### 2.4 TypeShape Edges
+
+| Edge Type | From | To | Properties | Description |
+|-----------|------|----|------------|-------------|
+| `HAS_SHAPE` | Variable | TypeShape | — | Variable has this structural shape |
+| `ACCEPTS` | LogicNode | TypeShape | `param_name` | Function parameter requires this shape |
+| `PRODUCES` | LogicNode | TypeShape | — | Function returns this shape |
+| `COMPATIBLE_WITH` | TypeShape | TypeShape | — | Source shape is a superset of target shape |
+
+### 2.5 Flow Edges
 
 | Edge Type | From | To | Properties | Description |
 |-----------|------|----|------------|-------------|
@@ -179,6 +205,9 @@ project/
       manifest.json
     flows/
       flow_<name>.json
+      ...
+    type_shapes/
+      <shape_hash>.json
       ...
     vfs/                    # GIT-TRACKED — editable projections
       services/
@@ -364,6 +393,9 @@ CREATE INDEX FOR (v:Variable) ON (v.id)
 CREATE INDEX FOR (v:Variable) ON (v.name)
 CREATE INDEX FOR (v:Variable) ON (v.scope)
 CREATE INDEX FOR (v:Variable) ON (v.origin_node_id)
+
+CREATE INDEX FOR (t:TypeShape) ON (t.id)
+CREATE INDEX FOR (t:TypeShape) ON (t.shape_hash)
 
 CREATE INDEX FOR (f:Flow) ON (f.id)
 CREATE INDEX FOR (f:Flow) ON (f.name)

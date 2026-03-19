@@ -28,7 +28,13 @@ from app.services.analysis.hash_identity import (
     generate_deterministic_node_id,
 )
 from app.services.parsing.relationship_extractor import RelationshipEdge, extract_relationships
-from app.services.parsing.variable_extractor import extract_variables
+from app.services.parsing.variable_extractor import ShapeEvidence, extract_variables
+from app.services.analysis.type_shape_service import (
+    build_shape_definition,
+    compute_compatible_with_edges,
+    compute_shape_hash,
+    create_or_get_type_shape,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +56,7 @@ class ImportReport:
     nodes_updated: int = 0
     edges_created: int = 0
     variables_created: int = 0
+    type_shapes_created: int = 0
     errors: list[str] = field(default_factory=list)
     files_processed: int = 0
 
@@ -208,11 +215,13 @@ def import_file(
         report.errors.append(f"Relationship extraction error in {file_path}: {exc}")
 
     # Extract variables for each function node
+    shape_evidence: dict[str, ShapeEvidence] = {}
+    var_name_to_id: dict[str, str] = {}
     try:
         func_nodes = [n for n in parse_result.nodes if n.node_type == "Function"]
         if func_nodes:
             var_result = extract_variables(source, file_path, parse_result.nodes)
-            var_name_to_id: dict[str, str] = {}
+            shape_evidence = var_result.evidence
 
             for var_node in var_result.nodes:
                 var_id = generate_deterministic_node_id(f"{var_node.name}::{var_node.scope}")
@@ -257,6 +266,12 @@ def import_file(
                         pass
     except Exception as exc:
         report.errors.append(f"Variable extraction error in {file_path}: {exc}")
+
+    # Create TypeShape nodes and edges from shape evidence
+    try:
+        _create_type_shapes_from_evidence(graph, shape_evidence, name_to_id, var_name_to_id, report)
+    except Exception as exc:
+        report.errors.append(f"TypeShape creation error in {file_path}: {exc}")
 
     return report
 
@@ -375,11 +390,13 @@ def import_directory(
             report.errors.append(f"Relationship extraction error in {file_path_str}: {exc}")
 
         # Variable nodes and edges
+        shape_evidence: dict[str, ShapeEvidence] = {}
+        file_var_name_to_id: dict[str, str] = {}
         try:
             func_nodes = [n for n in parse_result.nodes if n.node_type == "Function"]
             if func_nodes:
                 var_result = extract_variables(cached_source, file_path_str, parse_result.nodes)
-                var_name_to_id: dict[str, str] = {}
+                shape_evidence = var_result.evidence
 
                 for var_node in var_result.nodes:
                     var_id = generate_deterministic_node_id(f"{var_node.name}::{var_node.scope}")
@@ -401,12 +418,12 @@ def import_directory(
                             "created_at": now,
                         },
                     )
-                    var_name_to_id[var_node.name] = var_id
+                    file_var_name_to_id[var_node.name] = var_id
                     report.variables_created += 1
 
                 for var_edge in var_result.edges:
                     source_id = global_name_to_id.get(var_edge.source_name, "")
-                    target_id = var_name_to_id.get(var_edge.target_name, "")
+                    target_id = file_var_name_to_id.get(var_edge.target_name, "")
                     if source_id and target_id and var_edge.edge_type in lq.EDGE_MERGE_QUERIES:
                         try:
                             props = dict(var_edge.properties) if var_edge.properties else {}
@@ -423,6 +440,19 @@ def import_directory(
                             pass
         except Exception as exc:
             report.errors.append(f"Variable extraction error in {file_path_str}: {exc}")
+
+        # Create TypeShape nodes and edges from shape evidence
+        try:
+            _create_type_shapes_from_evidence(graph, shape_evidence, global_name_to_id, file_var_name_to_id, report)
+        except Exception as exc:
+            report.errors.append(f"TypeShape creation error in {file_path_str}: {exc}")
+
+    # Compute COMPATIBLE_WITH edges after all shapes are created
+    try:
+        compat_count = compute_compatible_with_edges(graph)
+        report.edges_created += compat_count
+    except Exception as exc:
+        report.errors.append(f"COMPATIBLE_WITH computation error: {exc}")
 
     # Clean up stale nodes: files that no longer exist on disk
     imported_abs_paths = {str(f.resolve()) for f in files}
@@ -674,3 +704,79 @@ def _create_relationship_edge(
         report.edges_created += 1
     except Exception as exc:
         report.errors.append(f"Edge creation error ({edge_type} {rel_edge.source_name} -> {rel_edge.target_name}): {exc}")
+
+
+def _create_type_shapes_from_evidence(
+    graph: Any,
+    evidence: dict[str, ShapeEvidence],
+    name_to_id: dict[str, str],
+    var_name_to_id: dict[str, str],
+    report: ImportReport,
+) -> None:
+    """Create TypeShape nodes and edges from extracted shape evidence.
+
+    For each variable with evidence:
+    - Build a shape definition
+    - Create/get the TypeShape node
+    - Create HAS_SHAPE edge (Variable -> TypeShape) for non-parameter variables
+    - Create ACCEPTS edge (LogicNode -> TypeShape) for parameter variables
+
+    Args:
+        graph: FalkorDB graph instance.
+        evidence: Shape evidence keyed by qualified variable name.
+        name_to_id: Mapping of function names to LogicNode IDs.
+        var_name_to_id: Mapping of variable names to Variable IDs.
+        report: Import report to update.
+    """
+    if not evidence:
+        return
+
+    for var_name, ev in evidence.items():
+        definition = build_shape_definition(ev)
+        if definition is None:
+            continue
+
+        shape_id = create_or_get_type_shape(graph, definition)
+        report.type_shapes_created += 1
+
+        var_id = var_name_to_id.get(var_name, "")
+        if not var_id:
+            continue
+
+        # Determine if this is a parameter variable
+        # Parameters have names like "func_name.param_name" where param_name has no dots
+        parts = var_name.rsplit(".", 1)
+        func_name = parts[0] if len(parts) > 1 else ""
+        is_parameter = func_name in name_to_id
+
+        if is_parameter:
+            # ACCEPTS: LogicNode -> TypeShape (with param_name property)
+            func_id = name_to_id.get(func_name, "")
+            if func_id:
+                param_name = parts[-1] if len(parts) > 1 else var_name
+                try:
+                    graph.query(
+                        lq.EDGE_MERGE_QUERIES["ACCEPTS"],
+                        params={
+                            "source_id": func_id,
+                            "target_id": shape_id,
+                            "properties": {"param_name": param_name},
+                        },
+                    )
+                    report.edges_created += 1
+                except Exception:
+                    pass
+
+        # HAS_SHAPE: Variable -> TypeShape (always, for both params and locals)
+        try:
+            graph.query(
+                lq.EDGE_MERGE_QUERIES["HAS_SHAPE"],
+                params={
+                    "source_id": var_id,
+                    "target_id": shape_id,
+                    "properties": {},
+                },
+            )
+            report.edges_created += 1
+        except Exception:
+            pass

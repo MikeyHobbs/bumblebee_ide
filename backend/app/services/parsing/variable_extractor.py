@@ -20,6 +20,25 @@ MUTATION_METHODS: set[str] = {
 
 
 @dataclass
+class ShapeEvidence:
+    """Shape evidence collected from how a variable is used.
+
+    Attributes:
+        variable_name: Qualified variable name.
+        attrs_accessed: Attribute names accessed (e.g., obj.name -> {"name"}).
+        subscripts_accessed: String-literal subscript keys (e.g., d["key"] -> {"key"}).
+        methods_called: Method names called (e.g., items.append() -> {"append"}).
+        type_hint: Type annotation if present.
+    """
+
+    variable_name: str
+    attrs_accessed: set[str] = field(default_factory=set)
+    subscripts_accessed: set[str] = field(default_factory=set)
+    methods_called: set[str] = field(default_factory=set)
+    type_hint: str | None = None
+
+
+@dataclass
 class VariableNode:
     """Represents a Variable node in the graph.
 
@@ -68,10 +87,12 @@ class VariableResult:
     Attributes:
         nodes: Variable nodes.
         edges: ASSIGNS, MUTATES, READS, RETURNS edges.
+        evidence: Shape evidence keyed by qualified variable name.
     """
 
     nodes: list[VariableNode]
     edges: list[VariableEdge]
+    evidence: dict[str, ShapeEvidence] = field(default_factory=dict)
 
 
 def _get_control_context(
@@ -227,6 +248,7 @@ def _extract_from_function(
     variables: dict[str, VariableNode],
     edges: list[VariableEdge],
     stmt_nodes: list[StatementNode],
+    evidence: dict[str, ShapeEvidence] | None = None,
 ) -> None:
     """Extract variable interactions from a single function body.
 
@@ -238,10 +260,14 @@ def _extract_from_function(
         variables: Accumulator dict of variable name -> VariableNode.
         edges: Accumulator for edges.
         stmt_nodes: Statement nodes for PART_OF linking.
+        evidence: Optional accumulator for shape evidence.
     """
     body = func_ts_node.child_by_field_name("body")
     if body is None:
         return
+
+    if evidence is None:
+        evidence = {}
 
     # Track parameters as variables
     params = func_ts_node.child_by_field_name("parameters")
@@ -276,13 +302,16 @@ def _extract_from_function(
                         type_hint=type_hint,
                         module_path=module_path,
                     )
+                # Initialize shape evidence for parameters with type hints
+                if type_hint and var_name not in evidence:
+                    evidence[var_name] = ShapeEvidence(variable_name=var_name, type_hint=type_hint)
 
     # Track for-loop variables
     _extract_for_vars(body, func_name, class_name, module_path, variables, edges)
 
-    # Walk body for assignments, mutations, reads, returns
+    # Walk body for assignments, mutations, reads, returns + shape evidence
     seq = 0
-    _walk_body_for_vars(body, func_name, class_name, module_path, variables, edges, stmt_nodes, seq)
+    _walk_body_for_vars(body, func_name, class_name, module_path, variables, edges, stmt_nodes, seq, evidence)
 
 
 def _extract_for_vars(
@@ -350,6 +379,7 @@ def _walk_body_for_vars(
     edges: list[VariableEdge],
     stmt_nodes: list[StatementNode],
     seq: int,
+    evidence: dict[str, ShapeEvidence] | None = None,
 ) -> int:
     """Walk a function body recursively to extract all variable interactions.
 
@@ -371,10 +401,17 @@ def _walk_body_for_vars(
                 # Expression statement — check for mutations and reads
                 if inner:
                     _extract_mutations_and_reads(inner, func_name, class_name, module_path, variables, edges, seq, cc, branch)
+            # Collect shape evidence from the expression
+            if inner and evidence is not None:
+                _collect_shape_evidence(inner, func_name, class_name, variables, evidence)
             seq += 1
 
         elif child.type in ("assignment", "augmented_assignment"):
             _handle_assignment(child, func_name, class_name, module_path, variables, edges, seq, cc, branch)
+            # Collect shape evidence from RHS
+            rhs = child.child_by_field_name("right") or child.child_by_field_name("value")
+            if rhs and evidence is not None:
+                _collect_shape_evidence(rhs, func_name, class_name, variables, evidence)
             seq += 1
 
         elif child.type == "return_statement":
@@ -386,11 +423,13 @@ def _walk_body_for_vars(
             cond = child.child_by_field_name("condition")
             if cond:
                 _extract_reads_from_expr(cond, func_name, class_name, module_path, variables, edges, seq, cc, branch)
+                if evidence is not None:
+                    _collect_shape_evidence(cond, func_name, class_name, variables, evidence)
             # Recurse into control flow bodies
             for sub in child.children:
                 if sub.type == "block":
                     seq = _walk_body_for_vars(
-                        sub, func_name, class_name, module_path, variables, edges, stmt_nodes, seq
+                        sub, func_name, class_name, module_path, variables, edges, stmt_nodes, seq, evidence
                     )
                 elif sub.type in ("elif_clause", "else_clause", "except_clause", "finally_clause"):
                     # Extract reads from elif conditions
@@ -402,7 +441,7 @@ def _walk_body_for_vars(
                     for subsub in sub.children:
                         if subsub.type == "block":
                             seq = _walk_body_for_vars(
-                                subsub, func_name, class_name, module_path, variables, edges, stmt_nodes, seq
+                                subsub, func_name, class_name, module_path, variables, edges, stmt_nodes, seq, evidence
                             )
 
         else:
@@ -643,6 +682,99 @@ def _collect_reads(
         _collect_reads(child, func_name, class_name, variables, edges, seq, cc, branch, seen)
 
 
+def _get_or_create_evidence(
+    var_name: str,
+    evidence: dict[str, ShapeEvidence],
+    variables: dict[str, VariableNode],
+) -> ShapeEvidence:
+    """Get or create shape evidence for a variable."""
+    if var_name not in evidence:
+        var_node = variables.get(var_name)
+        type_hint = var_node.type_hint if var_node else None
+        evidence[var_name] = ShapeEvidence(variable_name=var_name, type_hint=type_hint)
+    return evidence[var_name]
+
+
+def _collect_shape_evidence(
+    node: tree_sitter.Node,
+    func_name: str,
+    class_name: str | None,
+    variables: dict[str, VariableNode],
+    evidence: dict[str, ShapeEvidence],
+) -> None:
+    """Collect shape evidence (attrs, subscripts, methods) from an expression tree.
+
+    Detects three patterns:
+    1. Attribute access: obj.attr -> attrs_accessed
+    2. String-literal subscript: d["key"] -> subscripts_accessed
+    3. Method call: obj.method(...) -> methods_called
+
+    Args:
+        node: tree-sitter expression node.
+        func_name: Qualified function name for variable resolution.
+        class_name: Enclosing class name if any.
+        variables: Known variables for resolving names.
+        evidence: Accumulator for shape evidence.
+    """
+    if node.type == "call":
+        # Method call pattern: obj.method(...)
+        func_part = node.child_by_field_name("function")
+        if func_part and func_part.type == "attribute":
+            obj = func_part.child_by_field_name("object")
+            attr = func_part.child_by_field_name("attribute")
+            if obj and attr and obj.type == "identifier":
+                raw = obj.text.decode("utf-8")
+                if raw not in ("self", "cls", "True", "False", "None"):
+                    var_name = _make_variable_name(raw, func_name, class_name)
+                    if var_name in variables:
+                        ev = _get_or_create_evidence(var_name, evidence, variables)
+                        ev.methods_called.add(attr.text.decode("utf-8"))
+        # Recurse into call arguments for nested evidence
+        args = node.child_by_field_name("arguments")
+        if args:
+            for child in args.named_children:
+                _collect_shape_evidence(child, func_name, class_name, variables, evidence)
+        return
+
+    if node.type == "subscript":
+        # Subscript access pattern: d["key"]
+        obj = node.child_by_field_name("value")
+        subscript_node = node.child_by_field_name("subscript")
+        if obj and subscript_node and obj.type == "identifier":
+            raw = obj.text.decode("utf-8")
+            if raw not in ("self", "cls"):
+                var_name = _make_variable_name(raw, func_name, class_name)
+                if var_name in variables and subscript_node.type == "string":
+                    # Extract the string content (strip quotes)
+                    key_text = subscript_node.text.decode("utf-8")
+                    # Remove surrounding quotes
+                    key = key_text.strip("\"'")
+                    if key:
+                        ev = _get_or_create_evidence(var_name, evidence, variables)
+                        ev.subscripts_accessed.add(key)
+        # Recurse into children
+        for child in node.named_children:
+            _collect_shape_evidence(child, func_name, class_name, variables, evidence)
+        return
+
+    if node.type == "attribute":
+        # Attribute access pattern: obj.attr (not a call — calls handled above)
+        obj = node.child_by_field_name("object")
+        attr = node.child_by_field_name("attribute")
+        if obj and attr and obj.type == "identifier":
+            raw = obj.text.decode("utf-8")
+            if raw not in ("self", "cls", "True", "False", "None"):
+                var_name = _make_variable_name(raw, func_name, class_name)
+                if var_name in variables:
+                    ev = _get_or_create_evidence(var_name, evidence, variables)
+                    ev.attrs_accessed.add(attr.text.decode("utf-8"))
+        return
+
+    # Recurse into children for nested expressions
+    for child in node.named_children:
+        _collect_shape_evidence(child, func_name, class_name, variables, evidence)
+
+
 def _handle_return(
     node: tree_sitter.Node,
     func_name: str,
@@ -742,6 +874,7 @@ def extract_variables(
 
     variables: dict[str, VariableNode] = {}
     edges: list[VariableEdge] = []
+    evidence: dict[str, ShapeEvidence] = {}
 
     func_nodes = [n for n in structural_nodes if n.node_type == "Function"]
 
@@ -769,7 +902,7 @@ def extract_variables(
                     class_name = _find_enclosing_class(matched.name, structural_nodes)
                     _extract_from_function(
                         actual, matched.name, class_name, file_path,
-                        variables, edges, stmt_nodes or [],
+                        variables, edges, stmt_nodes or [], evidence,
                     )
 
                 body = actual.child_by_field_name("body")
@@ -783,4 +916,4 @@ def extract_variables(
 
     _find_and_extract(root)
 
-    return VariableResult(nodes=list(variables.values()), edges=edges)
+    return VariableResult(nodes=list(variables.values()), edges=edges, evidence=evidence)

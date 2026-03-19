@@ -118,6 +118,22 @@ def deserialize_graph(
     if all_var_items:
         _chunked_query(graph, lq.BATCH_MERGE_VARIABLES, all_var_items)
 
+    # ── Batch load TypeShapes ──
+    all_ts_items: list[dict[str, Any]] = []
+    ts_dir = base / "type_shapes"
+    if ts_dir.is_dir():
+        for ts_file in sorted(ts_dir.glob("ts_*.json")):
+            try:
+                data = json.loads(ts_file.read_text(encoding="utf-8"))
+                item = _prepare_type_shape_item(data)
+                if item:
+                    all_ts_items.append(item)
+            except Exception as exc:
+                report.errors.append(f"Error loading {ts_file.name}: {exc}")
+
+    if all_ts_items:
+        _chunked_query(graph, lq.BATCH_MERGE_TYPE_SHAPES, all_ts_items)
+
     # ── Batch load Edges (grouped by type) ──
     edge_buckets: dict[str, list[dict[str, Any]]] = {}
     edges_dir = base / "edges"
@@ -263,6 +279,26 @@ def _prepare_variable_item(data: dict[str, Any]) -> dict[str, Any] | None:
         "type_hint": data.get("type_hint", ""),
         "is_parameter": data.get("is_parameter", False),
         "is_attribute": data.get("is_attribute", False),
+        "created_at": data.get("created_at", ""),
+    }
+
+
+def _prepare_type_shape_item(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Prepare a TypeShape dict for batch UNWIND insertion."""
+    ts_id = data.get("id", "")
+    if not ts_id:
+        return None
+
+    definition = data.get("definition", {})
+    if isinstance(definition, dict):
+        definition = json.dumps(definition, sort_keys=True)
+
+    return {
+        "id": ts_id,
+        "shape_hash": data.get("shape_hash", ""),
+        "kind": data.get("kind", ""),
+        "base_type": data.get("base_type", ""),
+        "definition": definition,
         "created_at": data.get("created_at", ""),
     }
 

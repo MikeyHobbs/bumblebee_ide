@@ -32,11 +32,12 @@ class TestEnumCoverage:
         assert actual == expected
 
     def test_edge_type_values(self) -> None:
-        """EdgeType must have all 16 expected members."""
+        """EdgeType must have all 20 expected members."""
         expected = {
             "CALLS", "DEPENDS_ON", "IMPLEMENTS", "VALIDATES", "TRANSFORMS",
             "INHERITS", "MEMBER_OF", "ASSIGNS", "MUTATES", "READS", "RETURNS",
             "PASSES_TO", "FEEDS", "STEP_OF", "CONTAINS_FLOW", "PROMOTED_TO",
+            "HAS_SHAPE", "ACCEPTS", "PRODUCES", "COMPATIBLE_WITH",
         }
         actual = {member.value for member in EdgeType}
         assert actual == expected

@@ -25,7 +25,9 @@ CREATE INDEX FOR (v:Variable) ON (v.origin_node_id);
 CREATE INDEX FOR (f:Flow) ON (f.id);
 CREATE INDEX FOR (f:Flow) ON (f.name);
 CREATE INDEX FOR (f:Flow) ON (f.parent_flow_id);
-CREATE INDEX FOR (n:LogicNode) ON (n.module_path, n.name)
+CREATE INDEX FOR (n:LogicNode) ON (n.module_path, n.name);
+CREATE INDEX FOR (ts:TypeShape) ON (ts.id);
+CREATE INDEX FOR (ts:TypeShape) ON (ts.shape_hash)
 """
 
 # Split into individual statements for execution
@@ -376,8 +378,8 @@ RETURN root, collect(DISTINCT dep) AS dependents,
 
 GET_ALL_EDGES = """
 MATCH (s)-[r]->(t)
-WHERE (s:LogicNode OR s:Variable OR s:Flow)
-  AND (t:LogicNode OR t:Variable OR t:Flow)
+WHERE (s:LogicNode OR s:Variable OR s:Flow OR s:TypeShape)
+  AND (t:LogicNode OR t:Variable OR t:Flow OR t:TypeShape)
   AND s.id IS NOT NULL
   AND t.id IS NOT NULL
 RETURN type(r) AS edge_type, s.id AS source, t.id AS target, properties(r) AS props
@@ -758,3 +760,147 @@ MATCH (caller:LogicNode)-[:CALLS]->(n:LogicNode {id: $node_id})
 WHERE caller.status = 'active'
 RETURN caller.id AS id, caller.name AS name
 """
+
+
+# --- TypeShape CRUD ---
+
+MERGE_TYPE_SHAPE = """
+MERGE (ts:TypeShape {shape_hash: $shape_hash})
+ON CREATE SET ts.id = $id,
+    ts.kind = $kind,
+    ts.base_type = $base_type,
+    ts.definition = $definition,
+    ts.created_at = $created_at
+RETURN ts
+"""
+
+GET_TYPE_SHAPE_BY_HASH = """
+MATCH (ts:TypeShape {shape_hash: $shape_hash})
+RETURN ts
+"""
+
+GET_TYPE_SHAPE_BY_ID = """
+MATCH (ts:TypeShape {id: $id})
+RETURN ts
+"""
+
+GET_ALL_TYPE_SHAPES = """
+MATCH (ts:TypeShape)
+RETURN ts
+ORDER BY ts.shape_hash
+"""
+
+BATCH_MERGE_TYPE_SHAPES = """
+UNWIND $items AS item
+MERGE (ts:TypeShape {shape_hash: item.shape_hash})
+ON CREATE SET ts.id = item.id,
+    ts.kind = item.kind,
+    ts.base_type = item.base_type,
+    ts.definition = item.definition,
+    ts.created_at = item.created_at
+"""
+
+
+# --- TypeShape edge queries ---
+
+MERGE_EDGE_HAS_SHAPE = """
+MATCH (s:Variable {id: $source_id})
+MATCH (t:TypeShape {id: $target_id})
+MERGE (s)-[r:HAS_SHAPE]->(t)
+SET r += $properties
+RETURN s, r, t
+"""
+
+MERGE_EDGE_ACCEPTS = """
+MATCH (s:LogicNode {id: $source_id})
+MATCH (t:TypeShape {id: $target_id})
+MERGE (s)-[r:ACCEPTS]->(t)
+SET r += $properties
+RETURN s, r, t
+"""
+
+MERGE_EDGE_PRODUCES = """
+MATCH (s:LogicNode {id: $source_id})
+MATCH (t:TypeShape {id: $target_id})
+MERGE (s)-[r:PRODUCES]->(t)
+SET r += $properties
+RETURN s, r, t
+"""
+
+MERGE_EDGE_COMPATIBLE_WITH = """
+MATCH (s:TypeShape {id: $source_id})
+MATCH (t:TypeShape {id: $target_id})
+MERGE (s)-[r:COMPATIBLE_WITH]->(t)
+SET r += $properties
+RETURN s, r, t
+"""
+
+BATCH_MERGE_EDGES_HAS_SHAPE = """
+UNWIND $items AS item
+MATCH (s:Variable {id: item.source_id})
+MATCH (t:TypeShape {id: item.target_id})
+MERGE (s)-[r:HAS_SHAPE]->(t)
+"""
+
+BATCH_MERGE_EDGES_ACCEPTS = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:TypeShape {id: item.target_id})
+MERGE (s)-[r:ACCEPTS]->(t)
+SET r.param_name = coalesce(item.param_name, '')
+"""
+
+BATCH_MERGE_EDGES_PRODUCES = """
+UNWIND $items AS item
+MATCH (s:LogicNode {id: item.source_id})
+MATCH (t:TypeShape {id: item.target_id})
+MERGE (s)-[r:PRODUCES]->(t)
+"""
+
+BATCH_MERGE_EDGES_COMPATIBLE_WITH = """
+UNWIND $items AS item
+MATCH (s:TypeShape {id: item.source_id})
+MATCH (t:TypeShape {id: item.target_id})
+MERGE (s)-[r:COMPATIBLE_WITH]->(t)
+"""
+
+
+# --- TypeShape discovery queries ---
+
+FIND_CONSUMERS_FOR_VARIABLE = """
+MATCH (v:Variable {id: $variable_id})-[:HAS_SHAPE]->(ts:TypeShape)
+OPTIONAL MATCH (ts)<-[:COMPATIBLE_WITH*0..1]-(cts:TypeShape)
+WITH collect(ts) + collect(cts) AS shapes
+UNWIND shapes AS s
+MATCH (fn:LogicNode)-[:ACCEPTS]->(s)
+WHERE fn.status = 'active'
+RETURN DISTINCT fn
+"""
+
+FIND_PRODUCERS_FOR_NODE = """
+MATCH (fn:LogicNode {id: $node_id})-[:ACCEPTS]->(ts:TypeShape)
+OPTIONAL MATCH (ts)<-[:COMPATIBLE_WITH*0..1]-(cts:TypeShape)
+WITH collect(ts) + collect(cts) AS shapes
+UNWIND shapes AS s
+MATCH (producer:LogicNode)-[:PRODUCES]->(s)
+WHERE producer.status = 'active'
+RETURN DISTINCT producer
+"""
+
+SEARCH_TYPE_SHAPES = """
+MATCH (ts:TypeShape)
+WHERE ts.definition CONTAINS $query
+RETURN ts
+LIMIT $limit
+"""
+
+# Register TypeShape edge queries in the lookup dicts (defined after the templates)
+EDGE_MERGE_QUERIES["HAS_SHAPE"] = MERGE_EDGE_HAS_SHAPE
+EDGE_MERGE_QUERIES["ACCEPTS"] = MERGE_EDGE_ACCEPTS
+EDGE_MERGE_QUERIES["PRODUCES"] = MERGE_EDGE_PRODUCES
+EDGE_MERGE_QUERIES["COMPATIBLE_WITH"] = MERGE_EDGE_COMPATIBLE_WITH
+
+BATCH_EDGE_MERGE_QUERIES["HAS_SHAPE"] = BATCH_MERGE_EDGES_HAS_SHAPE
+BATCH_EDGE_MERGE_QUERIES["ACCEPTS"] = BATCH_MERGE_EDGES_ACCEPTS
+BATCH_EDGE_MERGE_QUERIES["PRODUCES"] = BATCH_MERGE_EDGES_PRODUCES
+BATCH_EDGE_MERGE_QUERIES["COMPATIBLE_WITH"] = BATCH_MERGE_EDGES_COMPATIBLE_WITH

@@ -27,6 +27,7 @@ from app.routers.import_router import router as import_router
 from app.routers.flows import router as flows_router
 from app.routers.vfs import router as vfs_router
 from app.routers.compose import router as compose_router
+from app.routers.type_shapes import router as type_shapes_router
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,7 @@ app.include_router(import_router)
 app.include_router(flows_router)
 app.include_router(vfs_router)
 app.include_router(compose_router)
+app.include_router(type_shapes_router)
 
 
 @app.get("/health")

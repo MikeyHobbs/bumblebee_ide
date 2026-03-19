@@ -54,6 +54,12 @@ class EdgeType(str, enum.Enum):
     CONTAINS_FLOW = "CONTAINS_FLOW"
     PROMOTED_TO = "PROMOTED_TO"
 
+    # TypeShape edges
+    HAS_SHAPE = "HAS_SHAPE"
+    ACCEPTS = "ACCEPTS"
+    PRODUCES = "PRODUCES"
+    COMPATIBLE_WITH = "COMPATIBLE_WITH"
+
 
 class MutationKind(str, enum.Enum):
     """Kinds of in-place mutation."""
@@ -285,6 +291,17 @@ class GapReport(BaseModel):
 # --- Serialization Models ---
 
 
+class TypeShapeResponse(BaseModel):
+    """Output model for a TypeShape node."""
+
+    id: str
+    shape_hash: str
+    kind: str  # "primitive", "generic", "structural", "hint"
+    base_type: str | None = None
+    definition: dict[str, Any]
+    created_at: datetime
+
+
 class GraphMeta(BaseModel):
     """Meta information for graph serialization."""
 
@@ -295,6 +312,7 @@ class GraphMeta(BaseModel):
     variable_count: int = 0
     edge_count: int = 0
     flow_count: int = 0
+    type_shape_count: int = 0
     last_serialized: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     source_language: str = "python"
     source_root: str = ""

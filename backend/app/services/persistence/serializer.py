@@ -65,6 +65,7 @@ def serialize_graph(output_dir: str) -> SerializationReport:
     (base / "edges").mkdir(parents=True, exist_ok=True)
     (base / "flows").mkdir(parents=True, exist_ok=True)
     (base / "vfs").mkdir(parents=True, exist_ok=True)
+    (base / "type_shapes").mkdir(parents=True, exist_ok=True)
 
     # Serialize LogicNodes
     try:
@@ -150,6 +151,24 @@ def serialize_graph(output_dir: str) -> SerializationReport:
     except Exception as exc:
         logger.error("Error serializing flows: %s", exc)
 
+    # Serialize TypeShapes
+    type_shape_count = 0
+    try:
+        result = graph.query(lq.GET_ALL_TYPE_SHAPES)
+        for row in result.result_set:
+            ts = row[0]
+            props = ts.properties if hasattr(ts, "properties") else ts
+            shape_hash = props.get("shape_hash", "")
+            if not shape_hash:
+                continue
+
+            ts_data = _type_shape_to_dict(props)
+            ts_path = base / "type_shapes" / f"ts_{shape_hash[:16]}.json"
+            _write_json(ts_path, ts_data)
+            type_shape_count += 1
+    except Exception as exc:
+        logger.error("Error serializing type shapes: %s", exc)
+
     # Write meta.json
     meta = {
         "version": "1.0.0",
@@ -159,6 +178,7 @@ def serialize_graph(output_dir: str) -> SerializationReport:
         "variable_count": report.variables_written,
         "edge_count": report.edges_written,
         "flow_count": report.flows_written,
+        "type_shape_count": type_shape_count,
         "last_serialized": datetime.now(timezone.utc).isoformat(),
         "source_language": "python",
         "source_root": "",
@@ -214,6 +234,21 @@ def _flow_to_dict(props: Any) -> dict[str, Any]:
     for key in keys:
         val = props.get(key, None) if isinstance(props, dict) else getattr(props, key, None)
         if key in ("exit_points", "node_ids", "sub_flow_ids") and isinstance(val, str):
+            try:
+                val = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        data[key] = val
+    return data
+
+
+def _type_shape_to_dict(props: Any) -> dict[str, Any]:
+    """Convert a TypeShape node's properties to a serializable dict."""
+    data: dict[str, Any] = {}
+    keys = ["id", "shape_hash", "kind", "base_type", "definition", "created_at"]
+    for key in keys:
+        val = props.get(key, None) if isinstance(props, dict) else getattr(props, key, None)
+        if key == "definition" and isinstance(val, str):
             try:
                 val = json.loads(val)
             except (json.JSONDecodeError, TypeError):
