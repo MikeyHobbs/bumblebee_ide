@@ -345,3 +345,405 @@ class TestEndToEndEvidence:
         assert definition["kind"] == "structural"
         assert "append" in definition["methods"]
         assert "extend" in definition["methods"]
+
+
+class TestGenericBareHintCompatibility:
+    """Test generic→bare hint bridging for generalization matching."""
+
+    def test_list_str_generalizes_to_list(self) -> None:
+        """hint:list[str] and hint:list should have different hashes, both kind=hint, generic has [."""
+        ev_generic = ShapeEvidence(variable_name="test.items", type_hint="list[str]")
+        ev_bare = ShapeEvidence(variable_name="test.items2", type_hint="list")
+
+        def_generic = build_shape_definition(ev_generic)
+        def_bare = build_shape_definition(ev_bare)
+        assert def_generic is not None
+        assert def_bare is not None
+
+        assert def_generic["kind"] == "hint"
+        assert def_bare["kind"] == "hint"
+        assert "[" in def_generic["type"]
+        assert "[" not in def_bare["type"]
+        assert compute_shape_hash(def_generic) != compute_shape_hash(def_bare)
+
+    def test_dict_str_int_generalizes_to_dict(self) -> None:
+        """hint:dict[str, int] and hint:dict should have different hashes, same pattern."""
+        ev_generic = ShapeEvidence(variable_name="test.d", type_hint="dict[str, int]")
+        ev_bare = ShapeEvidence(variable_name="test.d2", type_hint="dict")
+
+        def_generic = build_shape_definition(ev_generic)
+        def_bare = build_shape_definition(ev_bare)
+        assert def_generic is not None
+        assert def_bare is not None
+
+        assert def_generic["kind"] == "hint"
+        assert def_bare["kind"] == "hint"
+        assert "[" in def_generic["type"]
+        assert "[" not in def_bare["type"]
+        assert compute_shape_hash(def_generic) != compute_shape_hash(def_bare)
+
+    def test_list_str_does_not_match_list_int(self) -> None:
+        """hint:list[str] and hint:list[int] have different hashes with no COMPATIBLE_WITH bridge."""
+        ev1 = ShapeEvidence(variable_name="test.a", type_hint="list[str]")
+        ev2 = ShapeEvidence(variable_name="test.b", type_hint="list[int]")
+
+        def1 = build_shape_definition(ev1)
+        def2 = build_shape_definition(ev2)
+        assert def1 is not None
+        assert def2 is not None
+
+        # Different hashes — no bridge between them
+        assert compute_shape_hash(def1) != compute_shape_hash(def2)
+        # Both are generics — neither is a bare type that the other could generalize to
+        assert "[" in def1["type"]
+        assert "[" in def2["type"]
+
+
+SAMPLE_APP_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "test_repos", "sample_app")
+)
+
+
+def _get_app_var_result(rel_path: str):  # type: ignore[no-untyped-def]
+    """Parse a sample_app fixture and extract variables with shape evidence."""
+    source = open(os.path.join(SAMPLE_APP_DIR, rel_path), encoding="utf-8").read()
+    result = parse_file(source, rel_path)
+    return extract_variables(source, rel_path, result.nodes)
+
+
+class TestSampleAppApiRoutes:
+    """Test TypeShape evidence from api/routes.py."""
+
+    def test_request_attr_shapes(self) -> None:
+        """Request objects should produce attribute-based structural shapes."""
+        result = _get_app_var_result("api/routes.py")
+        request_evs = {k: v for k, v in result.evidence.items()
+                       if k.endswith(".request") and v.attrs_accessed}
+        assert len(request_evs) >= 2
+
+    def test_response_attr_shapes_shared(self) -> None:
+        """Multiple response-building functions should share a response attr shape."""
+        result = _get_app_var_result("api/routes.py")
+        response_evs = {k: v for k, v in result.evidence.items()
+                        if k.endswith(".response") and v.attrs_accessed}
+        assert len(response_evs) >= 2
+        shapes = set()
+        for ev in response_evs.values():
+            defn = build_shape_definition(ev)
+            if defn:
+                shapes.add(compute_shape_hash(defn))
+        assert len(shapes) < len(response_evs), "Expected shape sharing among response params"
+
+    def test_session_subscript_shapes(self) -> None:
+        """Session dict access should produce subscript shapes."""
+        result = _get_app_var_result("api/routes.py")
+        session_evs = {k: v for k, v in result.evidence.items()
+                       if k.endswith(".session") and v.subscripts_accessed}
+        assert len(session_evs) >= 1
+
+    def test_config_subscript_shapes(self) -> None:
+        """Config dict access should produce subscript shapes."""
+        result = _get_app_var_result("api/routes.py")
+        config_evs = {k: v for k, v in result.evidence.items()
+                      if k.endswith(".config") and v.subscripts_accessed}
+        assert len(config_evs) >= 1
+
+
+class TestSampleAppAuth:
+    """Test TypeShape evidence from services/auth.py."""
+
+    def test_token_subscript_subset_shapes(self) -> None:
+        """Token dict functions access different subsets of keys."""
+        result = _get_app_var_result("services/auth_service.py")
+        token_evs = {k: v for k, v in result.evidence.items()
+                     if k.endswith(".token") and v.subscripts_accessed}
+        assert len(token_evs) >= 2
+        sizes = sorted(len(ev.subscripts_accessed) for ev in token_evs.values())
+        assert sizes[0] < sizes[-1], "Expected subset relationships in token shapes"
+
+    def test_creds_subscript_shapes(self) -> None:
+        """Credential dict access should produce subscript shapes."""
+        result = _get_app_var_result("services/auth_service.py")
+        cred_evs = {k: v for k, v in result.evidence.items()
+                    if k.endswith(".creds") and v.subscripts_accessed}
+        assert len(cred_evs) >= 2
+
+    def test_session_subset_shapes(self) -> None:
+        """Session dict access should have subset/superset relationships."""
+        result = _get_app_var_result("services/auth_service.py")
+        session_evs = {k: v for k, v in result.evidence.items()
+                       if k.endswith(".session") and v.subscripts_accessed}
+        assert len(session_evs) >= 2
+        sizes = sorted(len(ev.subscripts_accessed) for ev in session_evs.values())
+        assert sizes[0] < sizes[-1], "Expected subset relationships in session shapes"
+
+    def test_hasher_method_shapes(self) -> None:
+        """Hasher objects should produce method-based shapes."""
+        result = _get_app_var_result("services/auth_service.py")
+        hasher_evs = {k: v for k, v in result.evidence.items()
+                      if k.endswith(".hasher") and v.methods_called}
+        assert len(hasher_evs) >= 1
+
+    def test_store_method_shapes(self) -> None:
+        """Session store objects should produce method-based shapes."""
+        result = _get_app_var_result("services/auth_service.py")
+        store_evs = {k: v for k, v in result.evidence.items()
+                     if k.endswith(".store") and v.methods_called}
+        assert len(store_evs) >= 2
+
+
+class TestSampleAppDataPipeline:
+    """Test TypeShape evidence from services/data_pipeline.py."""
+
+    def test_dataframe_attr_shapes(self) -> None:
+        """DataFrame-like objects should produce attribute or method shapes."""
+        result = _get_app_var_result("services/data_pipeline.py")
+        df_evs = {k: v for k, v in result.evidence.items()
+                  if k.endswith(".df") and (v.attrs_accessed or v.methods_called)}
+        assert len(df_evs) >= 2
+
+    def test_row_subscript_subset_shapes(self) -> None:
+        """Row dict functions access different subsets of keys."""
+        result = _get_app_var_result("services/data_pipeline.py")
+        row_evs = {k: v for k, v in result.evidence.items()
+                   if k.endswith(".row") and v.subscripts_accessed}
+        assert len(row_evs) >= 2
+        sizes = sorted(len(ev.subscripts_accessed) for ev in row_evs.values())
+        assert sizes[0] < sizes[-1], "Expected different-sized row subscript sets"
+
+    def test_conn_method_shapes(self) -> None:
+        """DB connection objects should produce method-based shapes."""
+        result = _get_app_var_result("services/data_pipeline.py")
+        conn_evs = {k: v for k, v in result.evidence.items()
+                    if k.endswith(".conn") and v.methods_called}
+        assert len(conn_evs) >= 2
+
+    def test_file_method_subset_shapes(self) -> None:
+        """File-like objects should produce method shapes with subsets."""
+        result = _get_app_var_result("services/data_pipeline.py")
+        file_evs = {k: v for k, v in result.evidence.items()
+                    if k.endswith(".f") and v.methods_called}
+        assert len(file_evs) >= 2
+        sizes = sorted(len(ev.methods_called) for ev in file_evs.values())
+        assert sizes[0] < sizes[-1], "Expected different-sized file method sets"
+
+
+class TestSampleAppEventBus:
+    """Test TypeShape evidence from services/event_bus.py."""
+
+    def test_event_attr_shapes(self) -> None:
+        """Event objects should produce attribute-based shapes with subsets."""
+        result = _get_app_var_result("services/event_bus.py")
+        event_evs = {k: v for k, v in result.evidence.items()
+                     if k.endswith(".event") and v.attrs_accessed}
+        assert len(event_evs) >= 2
+
+    def test_message_subscript_subset_shapes(self) -> None:
+        """Message dict functions access different subsets of keys."""
+        result = _get_app_var_result("services/event_bus.py")
+        msg_evs = {k: v for k, v in result.evidence.items()
+                   if k.endswith(".message") and v.subscripts_accessed}
+        assert len(msg_evs) >= 2
+        sizes = sorted(len(ev.subscripts_accessed) for ev in msg_evs.values())
+        assert sizes[0] < sizes[-1], "Expected subset relationships in message shapes"
+
+
+class TestSampleAppModels:
+    """Test TypeShape evidence from models/user.py and models/post.py."""
+
+    def test_user_attr_shapes(self) -> None:
+        """User attribute access should produce structural shapes."""
+        result = _get_app_var_result("models/user_model.py")
+        user_evs = {k: v for k, v in result.evidence.items()
+                    if k.endswith(".user") and v.attrs_accessed}
+        assert len(user_evs) >= 1
+
+    def test_user_row_subscript_subset(self) -> None:
+        """User row dict functions should have subset relationships."""
+        result = _get_app_var_result("models/user_model.py")
+        row_evs = {k: v for k, v in result.evidence.items()
+                   if k.endswith(".row") and v.subscripts_accessed}
+        assert len(row_evs) >= 2
+        sizes = sorted(len(ev.subscripts_accessed) for ev in row_evs.values())
+        assert sizes[0] < sizes[-1], "Expected subset relationships in user row shapes"
+
+    def test_post_attr_shapes(self) -> None:
+        """Post attribute access should produce structural shapes."""
+        result = _get_app_var_result("models/post_model.py")
+        post_evs = {k: v for k, v in result.evidence.items()
+                    if k.endswith(".post") and v.attrs_accessed}
+        assert len(post_evs) >= 1
+
+
+class TestSampleAppGraphAlgorithms:
+    """Test TypeShape evidence from utils/graph_algorithms.py."""
+
+    def test_node_attr_shapes(self) -> None:
+        """Graph/tree nodes should produce attribute-based shapes."""
+        result = _get_app_var_result("utils/graph_algorithms.py")
+        node_evs = {k: v for k, v in result.evidence.items()
+                    if ".node" in k and v.attrs_accessed}
+        assert len(node_evs) >= 2
+
+    def test_edge_subscript_shapes(self) -> None:
+        """Edge dicts should produce subscript-based shapes."""
+        result = _get_app_var_result("utils/graph_algorithms.py")
+        edge_evs = {k: v for k, v in result.evidence.items()
+                    if ".edge" in k and v.subscripts_accessed}
+        assert len(edge_evs) >= 1
+
+    def test_collection_method_shapes(self) -> None:
+        """Stack/queue/set collections should produce method shapes."""
+        result = _get_app_var_result("utils/graph_algorithms.py")
+        collection_evs = {k: v for k, v in result.evidence.items()
+                          if v.methods_called & {"append", "pop", "popleft", "add"}}
+        assert len(collection_evs) >= 3
+
+
+class TestSampleAppMathHelpers:
+    """Test TypeShape evidence from utils/math_helpers.py."""
+
+    def test_many_float_params_share_shape(self) -> None:
+        """Multiple float params should produce the same primitive shape."""
+        result = _get_app_var_result("utils/math_helpers.py")
+        float_evs = [v for v in result.evidence.values() if v.type_hint == "float"]
+        assert len(float_evs) >= 5
+        defs = [build_shape_definition(ev) for ev in float_evs]
+        hashes = {compute_shape_hash(d) for d in defs if d}
+        assert len(hashes) == 1, "All float params should share one shape hash"
+
+    def test_many_int_params_share_shape(self) -> None:
+        """Multiple int params should produce the same primitive shape."""
+        result = _get_app_var_result("utils/math_helpers.py")
+        int_evs = [v for v in result.evidence.values() if v.type_hint == "int"]
+        assert len(int_evs) >= 3
+        defs = [build_shape_definition(ev) for ev in int_evs]
+        hashes = {compute_shape_hash(d) for d in defs if d}
+        assert len(hashes) == 1, "All int params should share one shape hash"
+
+    def test_matrix_attr_shapes(self) -> None:
+        """Matrix objects should produce attribute-based shapes."""
+        result = _get_app_var_result("utils/math_helpers.py")
+        matrix_evs = {k: v for k, v in result.evidence.items()
+                      if k.endswith(".matrix") and v.attrs_accessed}
+        assert len(matrix_evs) >= 1
+
+
+class TestCrossModuleShapeDedup:
+    """Test that TypeShape deduplication works ACROSS sample_app modules."""
+
+    def test_request_shape_shared_across_api_and_auth(self) -> None:
+        """Request attr shapes in api/routes.py and services/auth.py should overlap."""
+        routes = _get_app_var_result("api/routes.py")
+        auth = _get_app_var_result("services/auth_service.py")
+
+        route_req = {k: v for k, v in routes.evidence.items()
+                     if k.endswith(".request") and v.attrs_accessed}
+        auth_req = {k: v for k, v in auth.evidence.items()
+                    if k.endswith(".request") and v.attrs_accessed}
+        assert route_req and auth_req, "Both modules should have request evidence"
+
+        # Auth accesses a subset of request attrs (e.g., just headers, body)
+        # Routes accesses more (method, path, headers, body, query_params)
+        route_attrs = set()
+        for ev in route_req.values():
+            route_attrs |= ev.attrs_accessed
+        auth_attrs = set()
+        for ev in auth_req.values():
+            auth_attrs |= ev.attrs_accessed
+        # Auth's request attrs should be a subset of routes' request attrs
+        assert auth_attrs & route_attrs, "Auth and routes should share some request attrs"
+
+    def test_session_shape_shared_across_modules(self) -> None:
+        """Session dict shapes should appear in both auth and middleware."""
+        auth = _get_app_var_result("services/auth_service.py")
+        mw = _get_app_var_result("api/middleware.py")
+
+        auth_sess = {k: v for k, v in auth.evidence.items()
+                     if k.endswith(".session") and v.subscripts_accessed}
+        mw_sess = {k: v for k, v in mw.evidence.items()
+                   if k.endswith(".session") and v.subscripts_accessed}
+        assert auth_sess, "Auth should have session evidence"
+        assert mw_sess, "Middleware should have session evidence"
+
+    def test_int_shapes_shared_across_modules(self) -> None:
+        """int params in math_helpers and graph_algorithms should share a shape hash."""
+        math = _get_app_var_result("utils/math_helpers.py")
+        graph = _get_app_var_result("utils/graph_algorithms.py")
+
+        math_int = next((v for v in math.evidence.values() if v.type_hint == "int"), None)
+        graph_int = next((v for v in graph.evidence.values() if v.type_hint == "int"), None)
+        assert math_int and graph_int
+
+        d1 = build_shape_definition(math_int)
+        d2 = build_shape_definition(graph_int)
+        assert d1 and d2
+        assert compute_shape_hash(d1) == compute_shape_hash(d2)
+
+    def test_unique_shape_count_across_sample_app(self) -> None:
+        """Across all sample_app modules, unique shapes should be much fewer than evidence."""
+        all_hashes: set[str] = set()
+        total_evidence = 0
+
+        for root, _dirs, files in os.walk(SAMPLE_APP_DIR):
+            for f in sorted(files):
+                if not f.endswith(".py") or f == "__init__.py":
+                    continue
+                rel = os.path.relpath(os.path.join(root, f), SAMPLE_APP_DIR)
+                result = _get_app_var_result(rel)
+                for ev in result.evidence.values():
+                    defn = build_shape_definition(ev)
+                    if defn:
+                        all_hashes.add(compute_shape_hash(defn))
+                        total_evidence += 1
+
+        # 333 shape-eligible entries, 118 unique — significant dedup
+        assert total_evidence > 200, f"Expected 200+ evidence entries, got {total_evidence}"
+        assert len(all_hashes) < total_evidence * 0.5, (
+            f"Expected significant dedup: {len(all_hashes)} unique out of {total_evidence} total"
+        )
+
+
+class TestDualShapeBehavior:
+    """Test dual TypeShape emission: structural + hint for typed parameters."""
+
+    def test_event_params_all_have_type_hints(self) -> None:
+        """Every .event evidence in event_bus.py should have both attrs_accessed and type_hint == 'Event'."""
+        result = _get_app_var_result("services/event_bus.py")
+        event_evs = {k: v for k, v in result.evidence.items()
+                     if k.endswith(".event") and v.attrs_accessed}
+        assert len(event_evs) >= 3, f"Expected 3+ event evidences, got {len(event_evs)}"
+        for key, ev in event_evs.items():
+            assert ev.type_hint == "Event", f"{key} should have type_hint='Event', got '{ev.type_hint}'"
+            assert ev.attrs_accessed, f"{key} should have attrs_accessed"
+
+    def test_structural_with_hint_produces_distinct_hashes(self) -> None:
+        """Structural and hint definitions from same evidence should have different hashes."""
+        ev = ShapeEvidence(
+            variable_name="test.event",
+            attrs_accessed={"name", "priority"},
+            type_hint="Event",
+        )
+        structural_def = build_shape_definition(ev)
+        hint_def = {"kind": "hint", "type": "Event"}
+
+        assert structural_def is not None
+        assert structural_def["kind"] == "structural"
+        assert compute_shape_hash(structural_def) != compute_shape_hash(hint_def)
+
+    def test_primitive_hint_skips_dual_shape(self) -> None:
+        """A primitive type hint (int) with structural evidence should NOT produce a hint shape.
+
+        The import pipeline guards against this with _HINT_SKIP_TYPES.
+        Here we verify the guard values match expectations.
+        """
+        from app.services.persistence.import_pipeline import _HINT_SKIP_TYPES
+
+        assert "int" in _HINT_SKIP_TYPES
+        assert "float" in _HINT_SKIP_TYPES
+        assert "str" in _HINT_SKIP_TYPES
+        assert "bool" in _HINT_SKIP_TYPES
+        # Non-primitives should NOT be in the skip set
+        assert "Event" not in _HINT_SKIP_TYPES
+        assert "dict" not in _HINT_SKIP_TYPES
+        assert "list" not in _HINT_SKIP_TYPES

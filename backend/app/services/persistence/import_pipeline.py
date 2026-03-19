@@ -38,6 +38,9 @@ from app.services.analysis.type_shape_service import (
 
 logger = logging.getLogger(__name__)
 
+# Primitive types that should NOT get a dual hint TypeShape alongside structural evidence.
+_HINT_SKIP_TYPES = frozenset({"int", "float", "str", "bool", "bytes", "complex", "None", "NoneType"})
+
 
 @dataclass
 class ImportReport:
@@ -780,3 +783,25 @@ def _create_type_shapes_from_evidence(
             report.edges_created += 1
         except Exception:
             pass
+
+        # Dual shape: if structural + non-primitive type hint, also create a hint TypeShape.
+        # This enables nominal-type matching (e.g. all functions accepting Event)
+        # alongside the duck-type structural matching.
+        if definition.get("kind") == "structural" and ev.type_hint:
+            base = ev.type_hint.split("[")[0].strip()
+            if base not in _HINT_SKIP_TYPES:
+                hint_definition = {"kind": "hint", "type": ev.type_hint}
+                hint_shape_id = create_or_get_type_shape(graph, hint_definition)
+                report.type_shapes_created += 1
+                try:
+                    graph.query(
+                        lq.EDGE_MERGE_QUERIES["HAS_SHAPE"],
+                        params={
+                            "source_id": var_id,
+                            "target_id": hint_shape_id,
+                            "properties": {},
+                        },
+                    )
+                    report.edges_created += 1
+                except Exception:
+                    pass
