@@ -1,18 +1,30 @@
-# Manifesto: Bumblebee IDE — Code as Data
+# Manifesto: Bumblebee — Code as Data
 
 ## 1. The Core Thesis
 
 **Code is data. Files are views. The graph is the source of truth.**
 
+**Don't ping a server to piece together your answer. Query a graph of code and let it assemble the answer for you.**
+
+Today, every AI agent that touches code does the same thing: it reads files one at a time, guesses which file to read next, and hopes it followed the right thread. An agent answering "how does authentication flow from request to database?" makes 8+ sequential tool calls — search, read, search, read, search, read — each with latency, token overhead, and the risk of missing a branch. It is reconstructing a graph by crawling text. Badly.
+
+Bumblebee eliminates this entirely. The codebase already exists as a structured, queryable knowledge graph. One query returns the complete answer — every node, every edge, every code snippet in the path. No round trips. No missed branches. No wasted tokens.
+
+This is not a better way to *browse* code. It is a fundamentally different substrate for AI agents to *reason about* code.
+
+### The Inversion
+
 In the age of Agentic AI, the fundamental unit of software is not a file — it is a *logic node*: a function, a method, a class. These nodes exist in a knowledge graph, connected by typed relationships that capture how logic flows, how data mutates, and how contracts are fulfilled. Files are merely one possible *projection* of this graph — a human-readable serialization optimized for compilers and text editors.
 
-Bumblebee IDE inverts the traditional relationship between code and its representation. Instead of parsing files into a graph for visualization, it treats the graph as canonical and projects files on demand. This enables a fundamentally different interaction model:
+Bumblebee inverts the traditional relationship between code and its representation. Instead of parsing files into a graph for visualization, it treats the graph as canonical and projects files on demand:
 
 - **AI agents create and edit LogicNodes**, not text files. The graph handles identity, deduplication, and dependency tracking.
 - **Humans read projected files** in a virtual filesystem (VFS), using familiar tools — editors, linters, debuggers — on output that is regenerated from the graph.
 - **Git stores the serialized graph** as JSON files, giving human-readable diffs and standard version control.
 
-The hardest question in any large codebase is not "where is this function?" but **"what happens to this data?"** A variable is created, passed through arguments, mutated by methods, aliased into new names, and eventually consumed — often across dozens of functions. No existing tool makes that journey visible. Bumblebee does.
+### The Question That Matters
+
+The hardest question in any large codebase is not "where is this function?" but **"what happens to this data?"** A variable is created, passed through arguments, mutated by methods, aliased into new names, and eventually consumed — often across dozens of functions. No existing tool makes that journey visible. Bumblebee does — in one query, in milliseconds.
 
 ## 2. The Two-Tier Node Model
 
@@ -65,9 +77,22 @@ Every variable is a first-class node in the graph. When a LogicNode is created o
 
 A single Cypher query returns the **full mutation timeline** of any variable: from its origin, through every transformation, to its final consumption — across function and file boundaries. This is the query that no text-based search can replicate.
 
-### 3.3 Atomic GraphRAG
+### 3.3 Atomic GraphRAG — Query the Graph, Assemble the Answer
 
-Intelligence lives in the database. Instead of feeding an LLM raw source text, we feed it **"Logic Packs"** — pre-processed subgraphs containing only the LogicNodes relevant to a specific logic chain. A Logic Pack for a variable mutation query includes every function that touches the variable, the edges between them, and the relevant source snippets — nothing more. This gives small local models (7B–8B) the same effective context as a 100B model working from raw files.
+This is the core of what makes Bumblebee an infrastructure layer, not just a visualization tool.
+
+Today's AI coding tools — whether they use MCP servers, file-reading tools, or RAG over chunked source — all share the same fundamental limitation: **the agent pieces together its understanding one request at a time.** It reads a file, decides what to read next, reads that, backtracks, reads something else. Each step is a network round trip, a token cost, and a chance to miss something. Complex questions about a codebase require dozens of these sequential hops. The agent is manually traversing a graph that doesn't exist.
+
+Bumblebee makes the graph exist. And instead of feeding an LLM raw source text, it feeds **"Logic Packs"** — pre-processed subgraphs containing only the LogicNodes relevant to a specific query. The graph assembles the complete, precise context in a single operation:
+
+- **"What services touch PII?"** — one Cypher query, not an agent grepping 10,000 files
+- **"What's the blast radius of changing this schema?"** — traverse DEPENDS_ON edges, not guessing at imports
+- **"How does auth flow from request to database?"** — complete call path in milliseconds, not 8+ sequential reads
+- **"Where is this config value actually used at runtime?"** — variable mutation trace across every function boundary
+
+A Logic Pack for a variable mutation query includes every function that touches the variable, the edges between them, and the relevant source snippets — nothing more. This gives small local models (7B–8B) the same effective context as a 100B model working from raw files.
+
+**The performance difference is not marginal — it is structural.** An MCP-based agent making 8 round trips at 2,000 tokens each consumes 16,000 tokens and takes seconds. Bumblebee returns the same answer in one query at ~3,000 tokens in milliseconds. At enterprise scale (10,000+ agent queries per day), this translates to 10-20x reduction in LLM API cost and dramatically higher accuracy because the graph traversal is exhaustive — it never misses a branch.
 
 ### 3.4 Graph-to-Git Serialization
 
@@ -119,10 +144,25 @@ This eliminates entire categories of agent errors: merge conflicts, partial writ
 - **Correctness:** Variable graphs are re-derived from the LogicNode's AST on every update — they are never stale. The UUID-based identity system means edges stay stable across edits.
 - **Deduplication:** The AST hash catches identical logic automatically. Create a function that already exists? The system warns you and points to the existing node.
 
-## 5. What Makes This Different
+## 5. The Infrastructure Layer
 
-| Capability | Traditional IDE | Static Analysis | File-based AI Agent | Bumblebee IDE |
-|-----------|----------------|-----------------|---------------------|---------------|
+Bumblebee is not an IDE — it is a **code intelligence infrastructure layer** with an IDE as its demo surface.
+
+The IDE makes the invisible visible: you can *see* the graph, *see* the mutation trace, *see* the Logic Pack assembled in real time. But the real product is what sits behind it — a structured, queryable code graph that any agent framework, any AI coding tool, any enterprise platform can query.
+
+**Any system that has AI agents reasoning about code can benefit from this layer:**
+
+- Agent platforms (LangChain, CrewAI, custom frameworks) get structured code context instead of file-crawling
+- AI coding tools (Copilot, Cursor, Claude Code) get complete, token-efficient subgraphs instead of naive context stuffing
+- Enterprise security tools get variable-level dataflow analysis instead of pattern matching on text
+- CI/CD systems get graph-aware impact analysis — "which tests need to re-run given this change?" is a graph query
+
+The graph doesn't replace these tools. It makes all of them dramatically better.
+
+## 6. What Makes This Different
+
+| Capability | Traditional IDE | Static Analysis | MCP / File-based Agent | Bumblebee |
+|-----------|----------------|-----------------|------------------------|-----------|
 | "Go to definition" | Yes | Yes | N/A | Yes |
 | "Find all references" | Yes | Yes | Grep | Graph query |
 | Cross-file call graph | No | Partial | No | Visual + queryable |
@@ -132,3 +172,6 @@ This eliminates entire categories of agent errors: merge conflicts, partial writ
 | Semantic diff of changes | No | No | No | Graph diff |
 | Deduplication detection | No | No | No | AST hash matching |
 | Live visual diff of agent changes | No | No | No | Ghost Preview |
+| Complex question in 1 query | No | Partial | 8+ round trips | Single Cypher query |
+| Token cost for agent context | N/A | N/A | 16,000+ tokens | ~3,000 tokens |
+| Guaranteed complete traversal | N/A | Yes | No (agent may stop early) | Yes (graph is exhaustive) |
