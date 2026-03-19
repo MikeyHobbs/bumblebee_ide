@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useGraphStore } from "./graphStore";
 
 interface CursorPosition {
   line: number;
@@ -77,11 +78,16 @@ export const useEditorStore = create<EditorState>((set) => ({
 
   closeTab: (tabId) =>
     set((state) => {
+      const closedTab = state.tabs.find((t) => t.id === tabId);
       const newTabs = state.tabs.filter((t) => t.id !== tabId);
       let newActiveId = state.activeTabId;
       if (state.activeTabId === tabId) {
         // Switch to the last remaining tab, or null
         newActiveId = newTabs.length > 0 ? newTabs[newTabs.length - 1]!.id : null;
+      }
+      // Remove the closed tab's node from graph highlights
+      if (closedTab?.nodeId) {
+        useGraphStore.getState().removeHighlightNode(closedTab.nodeId);
       }
       return { tabs: newTabs, activeTabId: newActiveId };
     }),

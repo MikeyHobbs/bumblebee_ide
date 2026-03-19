@@ -890,7 +890,10 @@ function AtlasOverview() {
     });
 
     // Semantic zoom: adjust label threshold
+    // Guard against calling setSetting on a killed Sigma instance
+    // (camera animations can outlive the Sigma lifecycle)
     sigma.getCamera().on("updated", () => {
+      if (sigmaRef.current !== sigma) return;
       const ratio = sigma.getCamera().ratio;
       const tier = getSigmaZoomTier(ratio);
       const threshold = labelThresholdForTier(tier);

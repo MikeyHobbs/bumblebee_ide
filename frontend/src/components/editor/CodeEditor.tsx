@@ -296,20 +296,17 @@ function CodeEditor() {
     }
   }, [highlightedLines]);
 
-  if (!activeTab) {
-    return (
-      <div
-        className="flex items-center justify-center h-full text-sm"
-        style={{ color: "var(--text-muted)" }}
-      >
-        Click a graph node or press + to start editing
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-col h-full">
-      <div className="flex-1 min-h-0">
+      {!activeTab && (
+        <div
+          className="flex items-center justify-center h-full text-sm"
+          style={{ color: "var(--text-muted)" }}
+        >
+          Click a graph node or press + to start editing
+        </div>
+      )}
+      <div className="flex-1 min-h-0" style={{ display: activeTab ? undefined : "none" }}>
         <Editor
           defaultLanguage="plaintext"
           theme="bumblebee-dark"
@@ -338,7 +335,7 @@ function CodeEditor() {
           }}
         />
       </div>
-      {activeTab.nodeId && <ExternalRefsPanel nodeId={activeTab.nodeId} />}
+      {activeTab?.nodeId && <ExternalRefsPanel nodeId={activeTab.nodeId} />}
     </div>
   );
 }

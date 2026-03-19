@@ -60,6 +60,7 @@ interface GraphState {
   // Query result (highlight on Sigma canvas)
   showQueryResult: (label: string, nodes: GraphNode[], edges: GraphEdge[]) => void;
   expandHighlight: (nodeId: string, neighborIds: string[]) => void;
+  removeHighlightNode: (nodeId: string) => void;
 
   // Diff
   setActiveDiff: (diff: SemanticDiff | null) => void;
@@ -220,6 +221,20 @@ export const useGraphStore = create<GraphState>((set) => ({
         highlightedNodeIds: next,
         focusedNodeId: nodeId,
       };
+    }),
+
+  removeHighlightNode: (nodeId) =>
+    set((state) => {
+      if (!state.highlightedNodeIds.has(nodeId)) return state;
+      const next = new Set(state.highlightedNodeIds);
+      next.delete(nodeId);
+      // If the focused node was removed, clear focus
+      const focusedNodeId = state.focusedNodeId === nodeId ? null : state.focusedNodeId;
+      // If no highlights remain, clear the query label too
+      if (next.size === 0) {
+        return { highlightedNodeIds: next, focusedNodeId, queryHighlightLabel: null };
+      }
+      return { highlightedNodeIds: next, focusedNodeId };
     }),
 
   setActiveDiff: (diff) => set({ activeDiff: diff }),
