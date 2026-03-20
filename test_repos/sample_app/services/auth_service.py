@@ -248,3 +248,20 @@ def refresh_stored_session(store, session_id: str, ttl: int) -> None:
     data = store.get(session_id)
     data["expires_at"] = time.time() + ttl
     store.set(session_id, data)
+
+
+def resolve_user_context(session: dict) -> dict:
+    """Resolve the full user context from a session.
+
+    Extracts the session user via get_session_user, validates the session
+    token via validate_token, and returns a context dict with the user ID
+    and authentication status.
+    """
+    user_id = get_session_user(session)
+    token = session.get("token_data", {})
+    is_valid = validate_token(token) if token else False
+    return {
+        "user_id": user_id,
+        "authenticated": bool(user_id) and is_valid,
+        "session_id": session.get("token", ""),
+    }

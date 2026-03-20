@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from models import BaseRepository, Order, User
+from utils import generate_id
 
 
 class UserRepository(BaseRepository):
@@ -59,3 +60,32 @@ class OrderRepository(BaseRepository):
     def find_by_user(self, user_id: str) -> list[Order]:
         """Return all orders belonging to a user."""
         return [o for o in self._store.values() if o.user_id == user_id]
+
+
+class LedgerRepository(BaseRepository):
+    """Stores financial ledger entries for payment processing."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, dict] = {}
+
+    def record_entry(self, user_id: str, order_id: str, amount: float) -> dict:
+        """Record a ledger entry for a payment transaction.
+
+        Generates a unique entry ID and persists the entry.
+        """
+        entry_id = generate_id()
+        self._validate_id(entry_id)
+        entry = {
+            "id": entry_id,
+            "user_id": user_id,
+            "order_id": order_id,
+            "amount": amount,
+            "status": "recorded",
+        }
+        self._store[entry_id] = entry
+        return entry
+
+    def get_by_id(self, entry_id: str) -> dict | None:
+        """Fetch a ledger entry by its ID."""
+        self._validate_id(entry_id)
+        return self._store.get(entry_id)

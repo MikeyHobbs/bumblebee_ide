@@ -42,3 +42,17 @@ def count_words(text: str) -> int:
     if not stripped:
         return 0
     return len(stripped.split())
+
+
+def format_notification(template: str, recipient: str, context: dict) -> str:
+    """Format a notification message from a template, recipient, and context.
+
+    Uses truncate and title_case to normalise the recipient display name
+    before interpolating into the template string.
+    """
+    display_name = title_case(recipient)
+    display_name = truncate(display_name, 50)
+    subject = context.get("subject", "")
+    body = context.get("body", "")
+    body = truncate(body, 280)
+    return template.format(name=display_name, subject=subject, body=body)
