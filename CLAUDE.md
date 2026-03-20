@@ -28,12 +28,11 @@ backend/
             persistence/   # Graph ↔ disk (serializer, deserializer, vfs_engine, import_pipeline)
             crud/          # Node/edge/flow CRUD (logic_node_service, edge_service, flow_service)
             codegen/       # Graph → source code (code_generator, write_back)
-            agent/         # LLM / tool-use (model_adapter, agent_tools_v2, tool_executor)
-            analysis/      # Diffing, gaps, hashing (semantic_diff, gap_analysis, hash_identity)
-            watchers/      # File system monitoring (file_watcher, bumblebee_watcher)
+            agent/         # LLM / tool-use (model_adapter, tool_executor)
+            analysis/      # Diffing, gaps, hashing (gap_analysis, hash_identity)
+            watchers/      # File system monitoring (file_watcher)
         models/            # Pydantic schemas & DB models (compose_models.py, etc.)
         graph/             # FalkorDB queries & Logic Pack builders
-        utils/             # Reusable utilities
     tests/
         conftest.py
         test_*.py
@@ -42,7 +41,7 @@ frontend/
         api/               # API hooks (split by domain: graph, nodes, variables, flows, import, files)
         components/        # UI components (organized by role)
             canvas/        # Graph visualization (AtlasOverview, GraphCanvas)
-            panels/        # Side panels (CallContextSidebar, LogicPackPanel, SemanticDiff, etc.)
+            panels/        # Side panels (SemanticDiff, etc.)
             editor/        # Code editing (CodeEditor, FunctionFlowView, ModelManager.ts)
             chat/          # AI chat (TerminalChat)
             layout/        # App shell (Layout, TabBar, Breadcrumbs)
