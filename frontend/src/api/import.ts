@@ -22,7 +22,9 @@ export function useIndexRepository() {
       return res.json() as Promise<IndexJobResponse>;
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["graph-nodes"] });
+      // Full re-index is a rare, deliberate action — nuke the entire cache so no
+      // stale data from a previous repo leaks into the UI.
+      queryClient.clear();
     },
   });
 }

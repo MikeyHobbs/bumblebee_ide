@@ -143,25 +143,59 @@ function LandingPage({ onIndexed }: LandingPageProps) {
             >
               Recent repositories
             </p>
-            <div className="space-y-1">
-              {recentRepos.map((repo) => (
-                <button
-                  key={repo}
-                  onClick={() => {
-                    setRepoPath(repo);
-                    handleSubmit(repo);
-                  }}
-                  className="block w-full text-left px-2 py-1 text-sm font-mono border"
-                  style={{
-                    background: "var(--bg-secondary)",
-                    borderColor: "var(--border)",
-                    color: "var(--text-primary)",
-                    cursor: "pointer",
-                  }}
-                >
-                  {repo}
-                </button>
-              ))}
+            <div
+              className="overflow-y-auto"
+              style={{
+                maxHeight: "240px",
+                border: "1px solid var(--border)",
+                background: "var(--bg-secondary)",
+              }}
+            >
+              {recentRepos.map((repo, i) => {
+                const segments = repo.replace(/\/+$/, "").split("/");
+                const name = segments[segments.length - 1] || repo;
+                const parent = segments.slice(0, -1).join("/");
+                return (
+                  <button
+                    key={repo}
+                    onClick={() => {
+                      setRepoPath(repo);
+                      handleSubmit(repo);
+                    }}
+                    title={repo}
+                    className="flex items-center gap-2 w-full text-left px-3 py-1.5 text-sm font-mono"
+                    style={{
+                      color: "var(--text-primary)",
+                      cursor: "pointer",
+                      borderTop: i > 0 ? "1px solid var(--border)" : "none",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = "var(--bg-tertiary)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "transparent";
+                    }}
+                  >
+                    <span
+                      className="flex-shrink-0 text-xs"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      {"\u25B8"}
+                    </span>
+                    <span className="truncate min-w-0">
+                      <span>{name}</span>
+                      {parent && (
+                        <span
+                          className="ml-2 text-xs"
+                          style={{ color: "var(--text-muted)" }}
+                        >
+                          {parent}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}

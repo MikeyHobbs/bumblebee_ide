@@ -10,6 +10,7 @@ import { useGraphOverview, useNodeVariables, apiFetch } from "@/api/client";
 import { useConsumerSubgraph } from "@/api/nodes";
 import { getSigmaZoomTier, labelThresholdForTier } from "@/graph/layout/semanticZoom";
 
+
 const VARIABLE_COLOR = "#ffd54f";   // local / assign / mutate
 const PARAM_COLOR = "#81d4fa";      // input parameters
 const ATTR_COLOR = "#ce93d8";       // attributes
@@ -59,6 +60,8 @@ function AtlasOverview() {
   const containerRef = useRef<HTMLDivElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const graphRef = useRef<Graph | null>(null);
+  const fa2Ref = useRef<InstanceType<typeof FA2Layout> | null>(null);
+  const fa2StopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draggedNode = useRef<string | null>(null);
   const isDragging = useRef(false);
   const wasDragged = useRef(false);
@@ -94,8 +97,11 @@ function AtlasOverview() {
   const focusRef = useRef({ focusedNodeId, expandedNodeId });
   focusRef.current = { focusedNodeId, expandedNodeId };
 
+  // Indexing state
+  const indexing = useGraphStore((s) => s.indexing);
+
   // Data fetching — lightweight overview (no source_text)
-  const { data: overview, isError: overviewError } = useGraphOverview();
+  const { data: overview, isLoading: overviewLoading, isError: overviewError, refetch: refetchOverview } = useGraphOverview(!indexing);
 
   // Fetch actual variable node data for the expanded node
   const { data: expandedVariables } = useNodeVariables(expandedNodeId);
@@ -128,6 +134,19 @@ function AtlasOverview() {
 
   // Track whether initial graph has been built — only rebuild once
   const [graphVersion, setGraphVersion] = useState(0);
+
+  // Reset graph when a new codebase starts indexing — kill sigma immediately + clear state
+  useEffect(() => {
+    if (indexing) {
+      if (sigmaRef.current) {
+        sigmaRef.current.kill();
+        sigmaRef.current = null;
+      }
+      setGraphVersion(0);
+      prevOverviewRef.current = new Set();
+      graphRef.current = null;
+    }
+  }, [indexing]);
 
   useEffect(() => {
     if (overviewNodes.length > 0 && graphVersion === 0) {
@@ -270,43 +289,45 @@ function AtlasOverview() {
     const addedNodes = overviewNodes.filter((n) => !prevNodeIds.has(n.id) && !graph.hasNode(n.id));
     const removedNodeIds = [...prevNodeIds].filter((id) => !newNodeIds.has(id) && graph.hasNode(id));
 
-    if (addedNodes.length === 0 && removedNodeIds.length === 0) {
-      prevOverviewRef.current = newNodeIds;
-      return;
+    let changed = false;
+
+    // --- Node additions ---
+    if (addedNodes.length > 0) {
+      changed = true;
+
+      // Compute bounding box of existing graph for positioning new nodes
+      let maxX = -Infinity, maxY = -Infinity, minX = Infinity, minY = Infinity;
+      graph.forEachNode((_, attrs) => {
+        if (attrs.isVariable) return;
+        const x = attrs.x as number;
+        const y = attrs.y as number;
+        if (x > maxX) maxX = x;
+        if (x < minX) minX = x;
+        if (y > maxY) maxY = y;
+        if (y < minY) minY = y;
+      });
+
+      // Add new nodes at the right edge of the graph
+      const offsetX = maxX + (maxX - minX) * 0.1 + 20;
+      addedNodes.forEach((n, i) => {
+        if (graph.hasNode(n.id)) return;
+        const color = generatePaletteColor(graph.order + i);
+        graph.addNode(n.id, {
+          x: offsetX,
+          y: (minY + maxY) / 2 + (i - addedNodes.length / 2) * 15,
+          size: sizeForKind(n.kind),
+          color,
+          originalColor: color,
+          label: localName(n.name),
+          kind: n.kind,
+          modulePath: n.module_path,
+          name: n.name,
+          isVariable: false,
+        });
+      });
     }
 
-    // Compute bounding box of existing graph for positioning new nodes
-    let maxX = -Infinity, maxY = -Infinity, minX = Infinity, minY = Infinity;
-    graph.forEachNode((_, attrs) => {
-      if (attrs.isVariable) return;
-      const x = attrs.x as number;
-      const y = attrs.y as number;
-      if (x > maxX) maxX = x;
-      if (x < minX) minX = x;
-      if (y > maxY) maxY = y;
-      if (y < minY) minY = y;
-    });
-
-    // Add new nodes at the right edge of the graph
-    const offsetX = maxX + (maxX - minX) * 0.1 + 20;
-    addedNodes.forEach((n, i) => {
-      if (graph.hasNode(n.id)) return;
-      const color = generatePaletteColor(graph.order + i);
-      graph.addNode(n.id, {
-        x: offsetX,
-        y: (minY + maxY) / 2 + (i - addedNodes.length / 2) * 15,
-        size: sizeForKind(n.kind),
-        color,
-        originalColor: color,
-        label: localName(n.name),
-        kind: n.kind,
-        modulePath: n.module_path,
-        name: n.name,
-        isVariable: false,
-      });
-    });
-
-    // Add new edges
+    // --- Edge sync (always runs) ---
     for (const e of overviewEdges) {
       if (graph.hasNode(e.source) && graph.hasNode(e.target)) {
         const edgeExists = graph.edges(e.source, e.target).some(
@@ -320,18 +341,32 @@ function AtlasOverview() {
               edgeType: e.type,
               weight: 3,
             });
+            changed = true;
           } catch { /* skip duplicate */ }
         }
       }
     }
 
-    // Remove stale nodes
+    // --- Node removals ---
     for (const id of removedNodeIds) {
-      if (graph.hasNode(id)) graph.dropNode(id);
+      if (graph.hasNode(id)) { graph.dropNode(id); changed = true; }
     }
 
     prevOverviewRef.current = newNodeIds;
-    sigma.refresh();
+    if (changed) {
+      sigma.refresh();
+      // Restart FA2 briefly so nodes resettle with new edges/nodes
+      const fa2 = fa2Ref.current;
+      if (fa2) {
+        if (fa2StopTimerRef.current !== null) clearTimeout(fa2StopTimerRef.current);
+        try {
+          fa2.start();
+          fa2StopTimerRef.current = setTimeout(() => {
+            fa2.stop();
+          }, graph.order > 500 ? 3000 : 1500);
+        } catch { /* FA2 worker may have been killed */ }
+      }
+    }
   }, [overviewNodes, overviewEdges]);
 
   // Handle variable expansion: show real variable nodes near the parent
@@ -587,8 +622,10 @@ function AtlasOverview() {
       }
     }
 
+    const existing = useGraphStore.getState().highlightedNodeIds;
+    const merged = new Set([...existing, ...matched]);
     useGraphStore.setState({
-      highlightedNodeIds: matched,
+      highlightedNodeIds: merged,
       queryHighlightLabel: `Consumers of ${varName}`,
     });
 
@@ -793,7 +830,9 @@ function AtlasOverview() {
 
         // Query highlight mode
         if (highlightIds.size > 0) {
-          if (highlightIds.has(node)) {
+          const { expandedNodeId: eid } = focusRef.current;
+          const parentHighlighted = data.isVariable && eid && highlightIds.has(eid);
+          if (highlightIds.has(node) || parentHighlighted) {
             const conf = data.confidence as string | undefined;
             if (conf === "weak") {
               const orig = (data.originalColor as string) || "#888";
@@ -876,7 +915,12 @@ function AtlasOverview() {
         if (highlightIds.size > 0 && graph) {
           const src = graph.source(edge);
           const tgt = graph.target(edge);
-          if (highlightIds.has(src) && highlightIds.has(tgt)) {
+          const srcHighlighted = highlightIds.has(src);
+          const tgtHighlighted = highlightIds.has(tgt);
+          const isVarEdge = data.isVariable as boolean | undefined;
+          const { expandedNodeId: eid } = focusRef.current;
+          const parentHighlighted = isVarEdge && eid && highlightIds.has(eid);
+          if ((srcHighlighted && tgtHighlighted) || parentHighlighted) {
             res.color = "rgba(255,255,255,0.08)";
             res.size = 0.5;
           } else {
@@ -941,9 +985,28 @@ function AtlasOverview() {
         wasDragged.current = false;
         return;
       }
+
       const graph = graphRef.current;
       const attrs = graph?.getNodeAttributes(node);
       if (!attrs || attrs.isVariable) return;
+
+      // TypeShape nodes: project to VFS and open in editor
+      if (attrs.isTypeShape) {
+        const shapeId = node.startsWith("ts:") ? node.slice(3) : node;
+        const label = typeof attrs.label === "string" ? attrs.label : "TypeShape";
+        void apiFetch<{ source: string; file_path: string }>(`/api/v1/vfs/type-shape/${shapeId}?project=true`)
+          .then((res) => {
+            callbacksRef.current.openNodeView({
+              nodeId: `ts:${shapeId}`,
+              name: label,
+              kind: "type_shape",
+              sourceText: res.source,
+              modulePath: `__typeshapes__.${label}`,
+            });
+          })
+          .catch((err) => console.warn(`Failed to project TypeShape ${shapeId}:`, err));
+        return;
+      }
 
       const nodeName = typeof attrs.name === "string" ? attrs.name : node;
       const kind = typeof attrs.kind === "string" ? attrs.kind : "";
@@ -1029,10 +1092,6 @@ function AtlasOverview() {
 
     sigma.on("doubleClickStage", ({ preventSigmaDefault }) => {
       preventSigmaDefault();
-    });
-
-    // Click stage: go home (zoom back out)
-    sigma.on("clickStage", () => {
       if (focusRef.current.focusedNodeId || traceRef.current.size > 0 || highlightRef.current.size > 0) {
         callbacksRef.current.clearTrace();
         callbacksRef.current.collapseExpanded();
@@ -1083,10 +1142,8 @@ function AtlasOverview() {
     sigmaRef.current = sigma;
 
     // Async ForceAtlas2 worker — runs until settled, then stops
-    let fa2: InstanceType<typeof FA2Layout> | null = null;
-    let stopTimer: ReturnType<typeof setTimeout> | null = null;
     try {
-      fa2 = new FA2Layout(graphData.g, {
+      fa2Ref.current = new FA2Layout(graphData.g, {
         settings: {
           barnesHutOptimize: true,
           barnesHutTheta: 0.5,
@@ -1098,9 +1155,9 @@ function AtlasOverview() {
           slowDown: graphData.g.order > 300 ? 8 : 4,
         },
       });
-      fa2.start();
-      stopTimer = setTimeout(() => {
-        fa2?.stop();
+      fa2Ref.current.start();
+      fa2StopTimerRef.current = setTimeout(() => {
+        fa2Ref.current?.stop();
       }, graphData.g.order > 500 ? 3000 : 1500);
     } catch (e) {
       console.warn("FA2Layout worker failed to start, graph will use static layout", e);
@@ -1127,8 +1184,10 @@ function AtlasOverview() {
     }
 
     return () => {
-      if (stopTimer !== null) clearTimeout(stopTimer);
-      fa2?.kill();
+      if (fa2StopTimerRef.current !== null) clearTimeout(fa2StopTimerRef.current);
+      fa2Ref.current?.kill();
+      fa2Ref.current = null;
+      fa2StopTimerRef.current = null;
       sigma.kill();
       sigmaRef.current = null;
     };
@@ -1140,10 +1199,7 @@ function AtlasOverview() {
   }, [focusedNodeId, expandedNodeId, tracedVariableId, highlightedNodeIds]);
 
   // Always render the container so Sigma's DOM element is never unmounted
-  const showOverlay = overviewError || !overview || overview.nodes.length === 0;
-  const overlayMessage = overviewError
-    ? "Failed to load graph — is the backend running?"
-    : "Loading graph...";
+  const showOverlay = overviewError || indexing || overviewLoading || !overview || overview.nodes.length === 0;
 
   return (
     <div style={{ position: "absolute", inset: 0 }}>
@@ -1155,9 +1211,33 @@ function AtlasOverview() {
           background: "var(--bg-primary)",
         }}
       />
+      {!showOverlay && (
+        <button
+          onClick={() => void refetchOverview()}
+          title="Refresh graph"
+          style={{
+            position: "absolute",
+            top: 8,
+            left: 8,
+            zIndex: 10,
+            background: "var(--bg-secondary)",
+            border: "1px solid var(--border)",
+            borderRadius: 4,
+            color: "var(--text-secondary)",
+            cursor: "pointer",
+            padding: "4px 6px",
+            fontSize: 13,
+            lineHeight: 1,
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text-primary)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-secondary)"; }}
+        >
+          &#x21bb;
+        </button>
+      )}
       {showOverlay && (
         <div
-          className="flex items-center justify-center"
+          className="flex flex-col items-center justify-center gap-4"
           style={{
             position: "absolute",
             inset: 0,
@@ -1166,7 +1246,28 @@ function AtlasOverview() {
             pointerEvents: "none",
           }}
         >
-          <span className="text-sm font-mono">{overlayMessage}</span>
+          {overviewError ? (
+            <span className="text-sm font-mono">Failed to load graph — is the backend running?</span>
+          ) : indexing ? (
+            <>
+              <div
+                className="w-48 h-1 rounded overflow-hidden"
+                style={{ background: "var(--bg-tertiary)" }}
+              >
+                <div
+                  className="h-full rounded"
+                  style={{
+                    background: "var(--node-function)",
+                    width: "60%",
+                    animation: "pulse 1.5s ease-in-out infinite",
+                  }}
+                />
+              </div>
+              <span className="text-sm font-mono">Indexing repository...</span>
+            </>
+          ) : (
+            <span className="text-sm font-mono">Loading graph...</span>
+          )}
         </div>
       )}
       {highlightedNodeIds.size > 0 && (

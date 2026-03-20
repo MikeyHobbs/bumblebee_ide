@@ -17,11 +17,13 @@ interface ChatMessage {
 
 const CYPHER_KEYWORDS = /^\s*(MATCH|RETURN|CREATE|MERGE|DELETE|DETACH|SET|REMOVE|WITH|UNWIND|CALL|OPTIONAL)\b/i;
 const VFS_CYPHER_PREFIX = /^\s*vfs\s+/i;
+const VFS_NL_PREFIX = /^\s*vfs\s*\?\s*/i;
 const NL_PREFIX = /^\s*(\?|ask\s)/i;
 const CLI_COMMANDS = /^\s*(ls|cd|pwd|cat|tree|find|info|help)\b/i;
 
-function inputMode(text: string): "cypher" | "cypher_vfs" | "nl" | "cli" {
+function inputMode(text: string): "cypher" | "cypher_vfs" | "nl" | "nl_vfs" | "cli" {
   const t = text.trim();
+  if (VFS_NL_PREFIX.test(t)) return "nl_vfs";
   if (VFS_CYPHER_PREFIX.test(t)) return "cypher_vfs";
   if (CYPHER_KEYWORDS.test(t)) return "cypher";
   if (NL_PREFIX.test(t)) return "nl";
@@ -196,6 +198,7 @@ function TerminalChat() {
           "  vfs MATCH ...   Cypher query + project matched modules to .bumblebee/vfs/",
           "  ? <question>    Natural language query via LLM",
           "  ask <question>  Natural language query via LLM",
+          "  vfs? <question> NL query via LLM + project results to .bumblebee/vfs/",
         ].join("\n"));
         return;
       }
@@ -431,6 +434,67 @@ function TerminalChat() {
   }
 
   // ---------------------------------------------------------------------------
+  // VFS projection helper (shared by Cypher and NL executors)
+  // ---------------------------------------------------------------------------
+
+  const projectNodesToVfs = useCallback(
+    async (vfsNodes: GraphNode[], label: string) => {
+      const sources: string[] = [];
+      const nodeIds: string[] = [];
+      const modulePaths = new Set<string>();
+
+      for (const node of vfsNodes) {
+        const src = node.properties["source_text"];
+        const mp = node.properties["module_path"];
+        if (typeof src === "string" && src.trim()) {
+          sources.push(src);
+          nodeIds.push(node.id);
+        }
+        if (typeof mp === "string" && mp) modulePaths.add(mp);
+      }
+
+      // Open a compose tab with all matched functions assembled
+      if (sources.length > 0) {
+        const assembled = sources.join("\n\n");
+        const tabId = crypto.randomUUID();
+        const queryShort = label.length > 25 ? label.slice(0, 22) + "..." : label;
+        const tab: EditorTab = {
+          id: tabId,
+          label: `vfs: ${queryShort}`,
+          nodeId: null,
+          modulePath: `__vfs_query__.${tabId}`,
+          content: assembled,
+          language: "python",
+          sourceNodeIds: nodeIds,
+          flowId: null,
+          gaps: null,
+          isDirty: false,
+        };
+        useEditorStore.getState().openTab(tab);
+        addMsg("system", `VFS: opened ${sources.length} function${sources.length !== 1 ? "s" : ""} in editor`);
+      }
+
+      // Also project to disk
+      if (modulePaths.size > 0) {
+        try {
+          const vfsRes = await fetch("/api/v1/vfs/project-modules", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ module_paths: [...modulePaths] }),
+          });
+          if (vfsRes.ok) {
+            const report = (await vfsRes.json()) as { files_written: number; modules_projected: number; errors: string[] };
+            addMsg("system", `VFS: projected ${report.modules_projected} module${report.modules_projected !== 1 ? "s" : ""} to .bumblebee/vfs/`);
+          }
+        } catch {
+          // disk projection is secondary — don't block on failure
+        }
+      }
+    },
+    [addMsg],
+  );
+
+  // ---------------------------------------------------------------------------
   // Cypher executor
   // ---------------------------------------------------------------------------
 
@@ -468,60 +532,8 @@ function TerminalChat() {
             showQueryResult(label, subgraph.nodes, subgraph.edges);
           }
 
-          // VFS projection: collect matched nodes, open them in a compose tab, and project to disk
           if (projectToVfs && subgraph.nodes.length > 0) {
-            // Collect source text from all matched LogicNodes
-            const sources: string[] = [];
-            const nodeIds: string[] = [];
-            const modulePaths = new Set<string>();
-
-            for (const node of subgraph.nodes) {
-              const src = node.properties["source_text"];
-              const mp = node.properties["module_path"];
-              if (typeof src === "string" && src.trim()) {
-                sources.push(src);
-                nodeIds.push(node.id);
-              }
-              if (typeof mp === "string" && mp) modulePaths.add(mp);
-            }
-
-            // Open a compose tab with all matched functions assembled
-            if (sources.length > 0) {
-              const assembled = sources.join("\n\n");
-              const tabId = crypto.randomUUID();
-              const queryShort = cypher.length > 25 ? cypher.slice(0, 22) + "..." : cypher;
-              const tab: EditorTab = {
-                id: tabId,
-                label: `vfs: ${queryShort}`,
-                nodeId: null,
-                modulePath: `__vfs_query__.${tabId}`,
-                content: assembled,
-                language: "python",
-                sourceNodeIds: nodeIds,
-                flowId: null,
-                gaps: null,
-                isDirty: false,
-              };
-              useEditorStore.getState().openTab(tab);
-              addMsg("system", `VFS: opened ${sources.length} function${sources.length !== 1 ? "s" : ""} in editor`);
-            }
-
-            // Also project to disk
-            if (modulePaths.size > 0) {
-              try {
-                const vfsRes = await fetch("/api/v1/vfs/project-modules", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ module_paths: [...modulePaths] }),
-                });
-                if (vfsRes.ok) {
-                  const report = (await vfsRes.json()) as { files_written: number; modules_projected: number; errors: string[] };
-                  addMsg("system", `VFS: projected ${report.modules_projected} module${report.modules_projected !== 1 ? "s" : ""} to .bumblebee/vfs/`);
-                }
-              } catch {
-                // disk projection is secondary — don't block on failure
-              }
-            }
+            await projectNodesToVfs(subgraph.nodes, cypher);
           }
         }
       } catch (err) {
@@ -530,7 +542,7 @@ function TerminalChat() {
         setIsStreaming(false);
       }
     },
-    [addMsg, showQueryResult],
+    [addMsg, showQueryResult, projectNodesToVfs],
   );
 
   // ---------------------------------------------------------------------------
@@ -538,19 +550,19 @@ function TerminalChat() {
   // ---------------------------------------------------------------------------
 
   const executeNl = useCallback(
-    async (text: string) => {
+    async (text: string, projectToVfs = false) => {
       setIsStreaming(true);
       const controller = new AbortController();
       abortRef.current = controller;
 
       try {
-        const chatHistory = messages
-          .filter((m) => m.role === "user" || m.role === "assistant")
-          .map((m) => ({ role: m.role, content: m.content }));
+        // No history — each NL query is an independent data-fetch; sending
+        // stale history (consecutive user messages with no assistant reply
+        // after early abort) causes the LLM to repeat prior answers.
         const res = await fetch("/api/v1/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text, history: chatHistory }),
+          body: JSON.stringify({ message: text }),
           signal: controller.signal,
         });
 
@@ -567,7 +579,6 @@ function TerminalChat() {
         const decoder = new TextDecoder();
         let assistantContent = "";
         const assistantId = `assistant-${Date.now()}`;
-        const cypherQueries: string[] = [];
 
         setMessages((prev) => [
           ...prev,
@@ -600,17 +611,40 @@ function TerminalChat() {
                       );
                     } else if (tp["type"] === "tool_call") {
                       const toolName = typeof tp["name"] === "string" ? tp["name"] : "unknown";
-                      addMsg("tool_call", `${toolName}: ${eventContent}`);
-                      // Track cypher queries for graph visualization
-                      if (toolName === "query_graph") {
-                        const args = tp["arguments"];
-                        if (args && typeof args === "object" && "cypher" in args) {
-                          const cypher = (args as Record<string, unknown>)["cypher"];
-                          if (typeof cypher === "string") cypherQueries.push(cypher);
+                      const argsStr = tp["arguments"] ? JSON.stringify(tp["arguments"]) : "";
+                      addMsg("tool_call", `${toolName}: ${argsStr}`);
+                    } else if (tp["type"] === "tool_result") {
+                      const toolName = typeof tp["name"] === "string" ? tp["name"] : "";
+                      // Extract result content for display
+                      const resultData = tp["result"];
+                      const resultStr = resultData
+                        ? (typeof resultData === "string" ? resultData : JSON.stringify(resultData, null, 2))
+                        : eventContent;
+                      addMsg("tool_result", `${toolName}: ${resultStr}`);
+                      // Extract nodes/edges and highlight immediately
+                      if (resultData && typeof resultData === "object") {
+                        const rd = resultData as Record<string, unknown>;
+                        const inner = (rd["result"] ?? rd) as Record<string, unknown>;
+                        const resultNodes: GraphNode[] = [];
+                        const resultEdges: GraphEdge[] = [];
+                        if (Array.isArray(inner["nodes"])) {
+                          for (const n of inner["nodes"] as GraphNode[]) {
+                            if (n.id) resultNodes.push(n);
+                          }
+                        }
+                        if (Array.isArray(inner["edges"])) {
+                          resultEdges.push(...(inner["edges"] as GraphEdge[]));
+                        }
+                        if (resultNodes.length > 0) {
+                          showQueryResult(text.slice(0, 30), resultNodes, resultEdges);
+                          if (projectToVfs) {
+                            void projectNodesToVfs(resultNodes, text);
+                          }
+                          // Data is captured — abort the stream so the LLM doesn't waste time summarising
+                          controller.abort();
+                          done = true;
                         }
                       }
-                    } else if (tp["type"] === "tool_result") {
-                      addMsg("tool_result", eventContent);
                     }
                   }
                 } catch { /* skip */ }
@@ -618,34 +652,9 @@ function TerminalChat() {
             }
           }
         }
-        // Push query results into the graph canvas
-        if (cypherQueries.length > 0) {
-          try {
-            // Combine results from all cypher queries the LLM ran
-            const allNodes: GraphNode[] = [];
-            const allEdges: GraphEdge[] = [];
-            const seenIds = new Set<string>();
-            for (const cypher of cypherQueries) {
-              const sgRes = await fetch("/api/v1/graph/query-subgraph", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ cypher }),
-              });
-              if (sgRes.ok) {
-                const sg = (await sgRes.json()) as SubgraphResponse;
-                for (const n of sg.nodes) {
-                  if (!seenIds.has(n.id)) {
-                    seenIds.add(n.id);
-                    allNodes.push(n);
-                  }
-                }
-                allEdges.push(...sg.edges);
-              }
-            }
-            if (allNodes.length > 0) {
-              showQueryResult(text.slice(0, 30), allNodes, allEdges);
-            }
-          } catch { /* non-critical */ }
+        // Remove the assistant message if it's still empty (e.g. aborted after tool_result)
+        if (!assistantContent.trim()) {
+          setMessages((prev) => prev.filter((m) => m.id !== assistantId));
         }
       } catch (err) {
         if (!(err instanceof DOMException && err.name === "AbortError")) {
@@ -656,7 +665,7 @@ function TerminalChat() {
         abortRef.current = null;
       }
     },
-    [messages, addMsg, showQueryResult],
+    [addMsg, showQueryResult, projectNodesToVfs],
   );
 
   // ---------------------------------------------------------------------------
@@ -681,7 +690,10 @@ function TerminalChat() {
       setInput("");
 
       const mode = inputMode(text);
-      if (mode === "cypher_vfs") {
+      if (mode === "nl_vfs") {
+        const question = text.trim().replace(VFS_NL_PREFIX, "").trim();
+        await executeNl(question, true);
+      } else if (mode === "cypher_vfs") {
         const cypher = text.trim().replace(VFS_CYPHER_PREFIX, "").trim();
         await executeCypher(cypher, true);
       } else if (mode === "cypher") {
@@ -832,6 +844,9 @@ function TerminalChat() {
             <div>
               <span style={{ color: "var(--prompt)" }}>? what calls save_order</span> — ask the LLM
             </div>
+            <div>
+              <span style={{ color: "var(--prompt)" }}>vfs? what does register_user call</span> — LLM query + VFS projection
+            </div>
           </div>
         )}
         {messages.map((msg) => {
@@ -863,19 +878,34 @@ function TerminalChat() {
         className="flex items-center border-t px-3 py-2 gap-2 flex-shrink-0"
         style={{ borderColor: "var(--border)" }}
       >
-        <span className="text-xs font-mono flex-shrink-0" style={{ color: "var(--prompt)" }}>
-          {promptPath}&gt;
-        </span>
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={isStreaming ? "Running..." : "ls, cd, tree, MATCH ..., ? ask"}
-          disabled={isStreaming}
-          className="flex-1 text-xs font-mono outline-none bg-transparent"
-          style={{ color: "var(--text-primary)" }}
-        />
+        {(() => {
+          const m = input.trim() ? inputMode(input) : null;
+          const modeColors: Record<string, string> = {
+            cypher: "var(--node-function)",
+            cypher_vfs: "var(--node-function)",
+            nl: "var(--prompt)",
+            nl_vfs: "var(--prompt)",
+          };
+          const promptColor = (m && modeColors[m]) || "var(--prompt)";
+          const inputColor = (m && modeColors[m]) || "var(--text-primary)";
+          return (
+            <>
+              <span className="text-xs font-mono flex-shrink-0" style={{ color: promptColor }}>
+                {promptPath}&gt;
+              </span>
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={isStreaming ? "Running..." : "ls, cd, tree, MATCH ..., ? ask, vfs? ask"}
+                disabled={isStreaming}
+                className="flex-1 text-xs font-mono outline-none bg-transparent"
+                style={{ color: inputColor }}
+              />
+            </>
+          );
+        })()}
         <button
           type="submit"
           disabled={isStreaming || !input.trim()}

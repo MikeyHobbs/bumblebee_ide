@@ -49,21 +49,9 @@ export function useWebSocket(options?: UseWebSocketOptions) {
 
         switch (wsEvent.type) {
           case "graph:updated":
-            void queryClient.invalidateQueries({
-              queryKey: ["graph-nodes"],
-            });
-            void queryClient.invalidateQueries({
-              queryKey: ["logic-pack"],
-            });
-            void queryClient.invalidateQueries({
-              queryKey: ["logic-nodes"],
-            });
-            void queryClient.invalidateQueries({
-              queryKey: ["all-edges"],
-            });
-            void queryClient.invalidateQueries({
-              queryKey: ["graph-overview"],
-            });
+            // Nuclear clear — the graph has changed, all cached query data is
+            // potentially stale (especially after a repo switch + re-index).
+            queryClient.clear();
             break;
           case "node:pulse": {
             const nodeId =

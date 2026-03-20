@@ -64,11 +64,12 @@ export function useFileMembers(modulePath: string | null) {
 export interface OverviewNode { id: string; kind: string; name: string; module_path: string; }
 export interface OverviewEdge { type: string; source: string; target: string; }
 
-export function useGraphOverview() {
+export function useGraphOverview(enabled = true) {
   return useQuery({
     queryKey: ["graph-overview"],
     queryFn: () => apiFetch<{ nodes: OverviewNode[]; edges: OverviewEdge[] }>("/api/v1/graph-overview"),
     staleTime: 30_000,
+    enabled,
   });
 }
 

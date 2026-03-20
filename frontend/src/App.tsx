@@ -3,6 +3,7 @@ import LandingPage from "@/components/pages/LandingPage";
 import Layout from "@/components/layout/Layout";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useGraphStore } from "@/store/graphStore";
+import { useEditorStore } from "@/store/editorStore";
 
 function App() {
   const [indexed, setIndexed] = useState(false);
@@ -22,6 +23,11 @@ function App() {
   });
 
   const handleIndexed = useCallback(() => {
+    // Clear all stale state from any previously loaded codebase
+    useGraphStore.getState().goHome();
+    useEditorStore.getState().clearAllTabs();
+    setProgress(0);
+    setProgressStatus("");
     setIndexed(true);
     setIndexing(true);
   }, [setIndexing]);
