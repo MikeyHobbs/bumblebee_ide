@@ -5,11 +5,11 @@ import FA2Layout from "graphology-layout-forceatlas2/worker";
 import Sigma from "sigma";
 import { NodeCircleProgram } from "sigma/rendering";
 import { useGraphStore } from "@/store/graphStore";
-import { useEditorStore } from "@/store/editorStore";
+import { useEditorStore, isNodeInVfsSession } from "@/store/editorStore";
 import { useGraphOverview, useNodeVariables, apiFetch } from "@/api/client";
 import { useConsumerSubgraph } from "@/api/nodes";
 import { getSigmaZoomTier, labelThresholdForTier } from "@/graph/layout/semanticZoom";
-
+import { buildCallInsertion } from "@/editor/completionService";
 
 const VARIABLE_COLOR = "#ffd54f";   // local / assign / mutate
 const PARAM_COLOR = "#81d4fa";      // input parameters
@@ -986,6 +986,49 @@ function AtlasOverview() {
         return;
       }
 
+      // Graph autocomplete mode: click a highlighted suggestion node to insert its call
+      const edState = useEditorStore.getState();
+      if (edState.graphAutoComplete && edState.pendingSuggestions.length > 0) {
+        const suggestion = edState.pendingSuggestions.find((s) => s.node_id === node);
+        if (suggestion) {
+          const varName = edState.suggestionContext?.variableName ?? "";
+          const insertion = buildCallInsertion(suggestion, varName);
+          // Dispatch a custom event that CodeEditor listens to for insertion
+          window.dispatchEvent(new CustomEvent("bumblebee:insert-suggestion", {
+            detail: { text: insertion, nodeId: node },
+          }));
+          edState.clearPendingSuggestions();
+          return;
+        }
+      }
+
+      // Graph AC mode (no pending suggestions): click to toggle node in/out of VFS session
+      if (edState.graphAutoComplete) {
+        const graph = graphRef.current;
+        const attrs = graph?.getNodeAttributes(node);
+        if (attrs?.isVariable) return; // skip variables
+
+        if (isNodeInVfsSession(node)) {
+          // Deselect — remove from VFS session
+          edState.removeNodeFromVfsSession(node);
+        } else {
+          // Add to VFS session — fetch source_text then add
+          const nodeName = typeof attrs?.name === "string" ? attrs.name : node;
+          const modulePath = typeof attrs?.modulePath === "string" ? attrs.modulePath : "";
+          void apiFetch<{ source_text: string }>(`/api/v1/nodes/${node}`)
+            .then((full) => {
+              useEditorStore.getState().addNodeToVfsSession(
+                node,
+                localName(nodeName),
+                full.source_text ?? "",
+                modulePath,
+              );
+            })
+            .catch((err) => console.warn(`Failed to fetch node ${node} for VFS session:`, err));
+        }
+        return;
+      }
+
       const graph = graphRef.current;
       const attrs = graph?.getNodeAttributes(node);
       if (!attrs || attrs.isVariable) return;
@@ -1192,6 +1235,27 @@ function AtlasOverview() {
       sigmaRef.current = null;
     };
   }, [graphData]);
+
+  // Listen for VFS rebuild events (triggered when a node is removed from VFS session)
+  useEffect(() => {
+    const handler = async (e: Event) => {
+      const { tabId, nodeIds } = (e as CustomEvent<{ tabId: string; nodeIds: string[] }>).detail;
+      try {
+        const sources = await Promise.all(
+          nodeIds.map((id) =>
+            apiFetch<{ source_text: string }>(`/api/v1/nodes/${id}`).then((r) => r.source_text ?? ""),
+          ),
+        );
+        const assembled = sources.filter(Boolean).join("\n\n");
+        useEditorStore.getState().updateTabContent(tabId, assembled);
+        useEditorStore.getState().markClean(tabId);
+      } catch (err) {
+        console.warn("VFS session rebuild failed:", err);
+      }
+    };
+    window.addEventListener("bumblebee:vfs-rebuild", handler);
+    return () => window.removeEventListener("bumblebee:vfs-rebuild", handler);
+  }, []);
 
   // Refresh sigma when focus/expand/trace/highlight state changes
   useEffect(() => {

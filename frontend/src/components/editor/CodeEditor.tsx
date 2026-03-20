@@ -8,6 +8,7 @@ import { getOrCreateNodeModel, getOrCreateTabModel } from "@/editor/ModelManager
 import ExternalRefsPanel from "../panels/ExternalRefsPanel";
 import CypherEvalPanel from "../panels/CypherEvalPanel";
 import { apiFetch } from "@/api/client";
+import { provideCompletionItems } from "@/editor/completionService";
 
 interface GraphNodeResponse {
   id: string;
@@ -16,6 +17,7 @@ interface GraphNodeResponse {
 }
 
 let definitionProviderRegistered = false;
+let completionProviderRegistered = false;
 
 function localName(qualifiedName: string): string {
   const parts = qualifiedName.split(".");
@@ -28,6 +30,8 @@ function CodeEditor() {
     return tab ?? null;
   });
   const setCursorPosition = useEditorStore((s) => s.setCursorPosition);
+  const graphAutoComplete = useEditorStore((s) => s.graphAutoComplete);
+  const toggleGraphAutoComplete = useEditorStore((s) => s.toggleGraphAutoComplete);
   const queryClient = useQueryClient();
   const queryClientRef = useRef(queryClient);
   queryClientRef.current = queryClient;
@@ -79,6 +83,20 @@ function CodeEditor() {
           window.dispatchEvent(new CustomEvent("bumblebee:save-tab", { detail: { tabId: tab.id } }));
         }
       });
+
+      // Graph-aware autocomplete
+      if (!completionProviderRegistered) {
+        completionProviderRegistered = true;
+        monaco.languages.registerCompletionItemProvider("python", {
+          triggerCharacters: [".", " "],
+          provideCompletionItems: (
+            model: Monaco.editor.ITextModel,
+            position: Monaco.Position,
+            context: Monaco.languages.CompletionContext,
+            token: Monaco.CancellationToken,
+          ) => provideCompletionItems(model, position, context, token, monaco),
+        });
+      }
 
       // Cmd+Click / Ctrl+Click: resolve symbol to graph node and navigate
       if (!definitionProviderRegistered) {
@@ -297,6 +315,47 @@ function CodeEditor() {
     }
   }, [highlightedLines]);
 
+  // Graph autocomplete: listen for insertion events from Atlas canvas clicks
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const { text } = (e as CustomEvent).detail as { text: string; nodeId: string };
+      const position = editor.getPosition();
+      if (!position) return;
+
+      const model = editor.getModel();
+      if (!model) return;
+
+      // Insert on the next line after cursor, with proper indentation
+      const currentLine = model.getLineContent(position.lineNumber);
+      const indentMatch = currentLine.match(/^(\s*)/);
+      const indent = indentMatch ? indentMatch[1]! : "";
+      const insertLine = position.lineNumber + 1;
+      const insertText = `\n${indent}${text}`;
+
+      // Insert at end of current line
+      const lineLength = currentLine.length;
+      editor.executeEdits("graph-autocomplete", [{
+        range: {
+          startLineNumber: position.lineNumber,
+          startColumn: lineLength + 1,
+          endLineNumber: position.lineNumber,
+          endColumn: lineLength + 1,
+        },
+        text: insertText,
+      }]);
+
+      // Move cursor to end of inserted text
+      const newPos = { lineNumber: insertLine, column: indent.length + text.length + 1 };
+      editor.setPosition(newPos);
+      editor.focus();
+    };
+
+    window.addEventListener("bumblebee:insert-suggestion", handler);
+    return () => window.removeEventListener("bumblebee:insert-suggestion", handler);
+  }, []);
+
   // Render CypherEvalPanel for __cypher_eval__ tabs
   if (activeTab?.modulePath === "__cypher_eval__") {
     return <CypherEvalPanel />;
@@ -312,7 +371,28 @@ function CodeEditor() {
           Click a graph node or press + to start editing
         </div>
       )}
-      <div className="flex-1 min-h-0" style={{ display: activeTab ? undefined : "none" }}>
+      <div className="flex-1 min-h-0 relative" style={{ display: activeTab ? undefined : "none" }}>
+        {/* Graph Autocomplete toggle */}
+        <button
+          onClick={toggleGraphAutoComplete}
+          className="absolute top-2 right-2 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors"
+          style={{
+            background: graphAutoComplete ? "#4ec990" : "#1a1a1a",
+            color: graphAutoComplete ? "#0a0a0a" : "#888",
+            border: `1px solid ${graphAutoComplete ? "#4ec990" : "#333"}`,
+          }}
+          title="Toggle graph-aware autocomplete — suggestions highlight in the graph canvas. Click a node to insert its call."
+        >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ opacity: graphAutoComplete ? 1 : 0.5 }}>
+            <circle cx="4" cy="4" r="2.5" stroke="currentColor" strokeWidth="1.2" />
+            <circle cx="12" cy="4" r="2.5" stroke="currentColor" strokeWidth="1.2" />
+            <circle cx="8" cy="13" r="2.5" stroke="currentColor" strokeWidth="1.2" />
+            <line x1="5.5" y1="5.8" x2="7" y2="11" stroke="currentColor" strokeWidth="1" />
+            <line x1="10.5" y1="5.8" x2="9" y2="11" stroke="currentColor" strokeWidth="1" />
+            <line x1="6" y1="4" x2="10" y2="4" stroke="currentColor" strokeWidth="1" />
+          </svg>
+          Graph AC
+        </button>
         <Editor
           defaultLanguage="plaintext"
           theme="bumblebee-dark"
@@ -325,6 +405,8 @@ function CodeEditor() {
             scrollBeyondLastLine: false,
             renderWhitespace: "selection",
             tabSize: 4,
+            quickSuggestions: { other: true, strings: false, comments: false },
+            suggestOnTriggerCharacters: true,
             wordWrap: "off",
             padding: { top: 8, bottom: 8 },
             glyphMargin: false,

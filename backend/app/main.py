@@ -29,6 +29,7 @@ from app.routers.vfs import router as vfs_router
 from app.routers.compose import router as compose_router
 from app.routers.type_shapes import router as type_shapes_router
 from app.routers.cypher_eval import router as cypher_eval_router
+from app.routers.suggestions import router as suggestions_router
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ app.include_router(vfs_router)
 app.include_router(compose_router)
 app.include_router(type_shapes_router)
 app.include_router(cypher_eval_router)
+app.include_router(suggestions_router)
 
 
 @app.get("/health")
