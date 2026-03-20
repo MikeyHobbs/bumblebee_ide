@@ -159,11 +159,12 @@ async def trigger_index(request: IndexRequest) -> JSONResponse:
     if not os.path.isdir(repo_path):
         raise HTTPException(status_code=400, detail=f"Repository path does not exist: {request.path}")
 
-    settings.watch_path = repo_path
+    # Don't set watch_path here — import_directory compares the old value
+    # against the new path to detect repo switches and flush the graph.
 
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "indexing", "files_done": 0, "files_total": 0, "current_file": ""}
-    asyncio.create_task(_run_index_job(job_id, request.path))
+    asyncio.create_task(_run_index_job(job_id, repo_path))
 
     return JSONResponse(
         status_code=202,
