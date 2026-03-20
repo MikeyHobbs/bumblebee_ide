@@ -205,6 +205,163 @@ def _sync_single_file(file_path: Path, report: SyncReport) -> None:
         report.errors.append(f"Sync error for {file_path}: {exc}")
 
 
+def project_type_shape(shape_id: str, output_dir: str = ".bumblebee/vfs") -> tuple[str, str]:
+    """Project a TypeShape to a Python stub file in VFS.
+
+    Generates a class stub showing the structural interface of a TypeShape,
+    including attributes, methods, subscripts, and connected variables/functions.
+
+    Args:
+        shape_id: UUID of the TypeShape node.
+        output_dir: VFS output directory path.
+
+    Returns:
+        Tuple of (generated_source, file_path_written).
+    """
+    graph = get_graph()
+
+    # Fetch TypeShape node
+    result = graph.query(lq.GET_TYPE_SHAPE_BY_ID, params={"id": shape_id})
+    if not result.result_set:
+        return "", ""
+
+    props = result.result_set[0][0].properties if hasattr(result.result_set[0][0], "properties") else result.result_set[0][0]
+    definition_str = props.get("definition", "{}")
+    try:
+        definition = json.loads(definition_str) if isinstance(definition_str, str) else definition_str
+    except (json.JSONDecodeError, TypeError):
+        definition = {}
+
+    kind = definition.get("kind", props.get("kind", ""))
+    base_type = props.get("base_type", "") or ""
+    type_hint = definition.get("type", "") or ""
+
+    # Fetch connections
+    conn_result = graph.query(lq.GET_TYPE_SHAPE_CONNECTIONS, params={"id": shape_id})
+    variables: list[dict[str, Any]] = []
+    accepting_fns: list[dict[str, Any]] = []
+    producing_fns: list[dict[str, Any]] = []
+    if conn_result.result_set:
+        row = conn_result.result_set[0]
+        variables = [v for v in (row[0] or []) if isinstance(v, dict) and v.get("id")]
+        accepting_fns = [f for f in (row[1] or []) if isinstance(f, dict) and f.get("id")]
+        producing_fns = [f for f in (row[2] or []) if isinstance(f, dict) and f.get("id")]
+
+    source = _generate_type_shape_stub(definition, kind, base_type, type_hint, variables, accepting_fns, producing_fns)
+
+    # Determine class name for file path
+    class_name = base_type or type_hint.split("[")[0].rsplit(".", 1)[-1] or f"shape_{shape_id[:8]}"
+    class_name = class_name.replace(" ", "_")
+    file_rel = f"__typeshapes__/{class_name}.py"
+    file_path = Path(output_dir) / file_rel
+
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(source, encoding="utf-8")
+    logger.info("VFS projected TypeShape %s to %s", shape_id, file_path)
+
+    return source, str(file_path)
+
+
+def _generate_type_shape_stub(
+    definition: dict[str, Any],
+    kind: str,
+    base_type: str,
+    type_hint: str,
+    variables: list[dict[str, Any]],
+    accepting_fns: list[dict[str, Any]],
+    producing_fns: list[dict[str, Any]],
+) -> str:
+    """Generate a Python stub representing a TypeShape's structural interface.
+
+    Args:
+        definition: Parsed TypeShape definition dict.
+        kind: Shape kind ("structural" or "hint").
+        base_type: Base type name.
+        type_hint: Full type hint string.
+        variables: Variables with this shape.
+        accepting_fns: Functions that accept this shape.
+        producing_fns: Functions that produce this shape.
+
+    Returns:
+        Python source string.
+    """
+    lines: list[str] = []
+    class_name = base_type or type_hint.split("[")[0].rsplit(".", 1)[-1] or "UnknownType"
+    # Sanitise to valid Python identifier
+    class_name = "".join(c if c.isalnum() or c == "_" else "_" for c in class_name)
+
+    # Header comment
+    lines.append(f'"""TypeShape stub: {kind} evidence for {base_type or type_hint}.')
+    lines.append("")
+    lines.append(f"Kind: {kind}")
+    if type_hint:
+        lines.append(f"Type hint: {type_hint}")
+    lines.append('"""')
+    lines.append("")
+
+    # Variables section
+    if variables:
+        lines.append(f"# Variables with this shape ({len(variables)})")
+        for v in variables:
+            hint = v.get("type_hint") or ""
+            name = v.get("name", "")
+            lines.append(f"#   {name}{': ' + hint if hint else ''}")
+        lines.append("")
+
+    # Accepting functions
+    if accepting_fns:
+        lines.append(f"# Accepted by ({len(accepting_fns)})")
+        for f in accepting_fns:
+            sig = f.get("signature", "") or f.get("name", "")
+            lines.append(f"#   {sig}")
+        lines.append("")
+
+    # Producing functions
+    if producing_fns:
+        lines.append(f"# Produced by ({len(producing_fns)})")
+        for f in producing_fns:
+            lines.append(f"#   {f.get('name', '')}")
+        lines.append("")
+
+    attrs = definition.get("attrs", [])
+    methods = definition.get("methods", [])
+    subscripts = definition.get("subscripts", [])
+
+    if kind == "hint" and not attrs and not methods and not subscripts:
+        # Pure hint shape — no structural evidence
+        lines.append(f"{class_name} = {type_hint}")
+        lines.append("")
+    else:
+        # Class stub with structural evidence
+        lines.append("")
+        lines.append(f"class {class_name}:")
+        has_body = False
+
+        if attrs:
+            for attr in sorted(attrs):
+                lines.append(f"    {attr}: ...")
+                has_body = True
+            lines.append("")
+
+        if subscripts:
+            for sub in sorted(subscripts):
+                lines.append(f"    # subscript: [{sub}]")
+                has_body = True
+            lines.append("")
+
+        if methods:
+            for method in sorted(methods):
+                lines.append(f"    def {method}(self, *args, **kwargs): ...")
+                lines.append("")
+                has_body = True
+
+        if not has_body:
+            lines.append("    pass")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
 def _generate_module_source(nodes: list[dict[str, Any]], module_path: str) -> str:
     """Generate Python source for a module from its LogicNodes.
 

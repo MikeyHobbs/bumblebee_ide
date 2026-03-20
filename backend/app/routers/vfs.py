@@ -47,13 +47,7 @@ class SyncReportResponse(BaseModel):
     errors: list[str]
 
 
-@router.get("/{module_path:path}", response_class=PlainTextResponse)
-def get_vfs_module(module_path: str) -> str:
-    """Get projected Python source for a module."""
-    source = vfs_engine.project_module(module_path)
-    if not source:
-        raise HTTPException(status_code=404, detail=f"No nodes found for module: {module_path}")
-    return source
+# --- Specific routes BEFORE the catch-all path route ---
 
 
 @router.get("/node/{node_id}", response_class=PlainTextResponse)
@@ -63,6 +57,27 @@ def get_vfs_node(node_id: str) -> str:
     if not source:
         raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
     return source
+
+
+@router.get("/type-shape/{shape_id}")
+def get_vfs_type_shape(shape_id: str, project: bool = False) -> dict:
+    """Get projected Python stub for a TypeShape.
+
+    Args:
+        shape_id: UUID of the TypeShape node.
+        project: If true, also write to disk in `.bumblebee/vfs/`.
+
+    Returns:
+        Dict with source text and file path.
+    """
+    output_dir = ".bumblebee/vfs" if project else ""
+    if project:
+        source, file_path = vfs_engine.project_type_shape(shape_id, output_dir)
+    else:
+        source, file_path = vfs_engine.project_type_shape(shape_id)
+    if not source:
+        raise HTTPException(status_code=404, detail=f"TypeShape not found: {shape_id}")
+    return {"source": source, "file_path": file_path}
 
 
 @router.post("/project", response_model=ProjectionReportResponse)
@@ -104,3 +119,15 @@ def sync_vfs(data: SyncRequest) -> SyncReportResponse:
         nodes_deprecated=report.nodes_deprecated,
         errors=report.errors,
     )
+
+
+# --- Catch-all module path route LAST ---
+
+
+@router.get("/{module_path:path}", response_class=PlainTextResponse)
+def get_vfs_module(module_path: str) -> str:
+    """Get projected Python source for a module."""
+    source = vfs_engine.project_module(module_path)
+    if not source:
+        raise HTTPException(status_code=404, detail=f"No nodes found for module: {module_path}")
+    return source

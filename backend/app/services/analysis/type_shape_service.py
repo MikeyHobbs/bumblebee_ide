@@ -75,7 +75,8 @@ def compute_shape_hash(definition: dict[str, Any]) -> str:
         attrs = ",".join(sorted(definition.get("attrs", [])))
         subscripts = ",".join(sorted(definition.get("subscripts", [])))
         methods = ",".join(sorted(definition.get("methods", [])))
-        canonical = f"structural:{{attrs:{attrs}|methods:{methods}|subscripts:{subscripts}}}"
+        base_type = definition.get("base_type", "")
+        canonical = f"structural:{{base_type:{base_type}|attrs:{attrs}|methods:{methods}|subscripts:{subscripts}}}"
     elif kind == "primitive":
         canonical = f"primitive:{definition.get('type', '')}"
     elif kind == "hint":
@@ -166,11 +167,30 @@ def compute_compatible_with_edges(graph: Any) -> int:
 
     edges_created = 0
 
+    # Minimum evidence items (attrs + subscripts + methods) for a structural
+    # shape to participate as the subset side of COMPATIBLE_WITH.  Single-
+    # attribute shapes (e.g. just {data}) are too generic — common attributes
+    # like data, name, value, id would false-match across unrelated types.
+    MIN_STRUCTURAL_EVIDENCE = 2
+
     # Structural ↔ Structural: superset relationships
     for i, s1 in enumerate(structural_shapes):
         for j, s2 in enumerate(structural_shapes):
             if i == j:
                 continue
+
+            # Skip subset shapes with too little evidence
+            total_s2 = len(s2["attrs"]) + len(s2["subscripts"]) + len(s2["methods"])
+            if total_s2 < MIN_STRUCTURAL_EVIDENCE:
+                continue
+
+            # If either shape has a base_type, skip direct edge — typed
+            # shapes connect through the hint hub only.
+            s1_base = s1["base_type"]
+            s2_base = s2["base_type"]
+            if s1_base or s2_base:
+                continue
+
             # S1 is superset of S2 if all of S2's sets are subsets of S1's
             if (
                 s2["attrs"] <= s1["attrs"]
@@ -191,16 +211,52 @@ def compute_compatible_with_edges(graph: Any) -> int:
                 except Exception as exc:
                     logger.warning("COMPATIBLE_WITH edge error: %s", exc)
 
+    # Facet clustering: connect untyped shapes with complementary facets.
+    # One shape has attrs/subscripts only, the other has methods only.
+    for i, s1 in enumerate(structural_shapes):
+        if s1["base_type"]:
+            continue
+        for j, s2 in enumerate(structural_shapes):
+            if i >= j or s2["base_type"]:
+                continue
+            s1_has_data = bool(s1["attrs"] or s1["subscripts"])
+            s1_has_methods = bool(s1["methods"])
+            s2_has_data = bool(s2["attrs"] or s2["subscripts"])
+            s2_has_methods = bool(s2["methods"])
+            if not ((s1_has_data and not s1_has_methods and s2_has_methods and not s2_has_data)
+                    or (s1_has_methods and not s1_has_data and s2_has_data and not s2_has_methods)):
+                continue
+            s1_total = len(s1["attrs"]) + len(s1["subscripts"]) + len(s1["methods"])
+            s2_total = len(s2["attrs"]) + len(s2["subscripts"]) + len(s2["methods"])
+            if s1_total >= 1 and s2_total >= 1:
+                for src_id, tgt_id in [(s1["id"], s2["id"]), (s2["id"], s1["id"])]:
+                    try:
+                        graph.query(
+                            lq.EDGE_MERGE_QUERIES["COMPATIBLE_WITH"],
+                            params={
+                                "source_id": src_id,
+                                "target_id": tgt_id,
+                                "properties": {"strength": "facet_cluster"},
+                            },
+                        )
+                        edges_created += 1
+                    except Exception as exc:
+                        logger.warning("COMPATIBLE_WITH facet cluster edge error: %s", exc)
+
     # Hint ↔ Structural: bridge typed variables to duck-typed consumers.
     # A hint shape (e.g. pd.DataFrame) is COMPATIBLE_WITH any structural shape
     # that was extracted from the same base type, allowing consumer discovery
     # across the typed/untyped boundary.
+    # Skip primitive containers — they're too generic to be useful for matching.
+    _PRIMITIVE_CONTAINERS = {"list", "dict", "set", "tuple", "frozenset", "deque"}
     for hint in hint_shapes:
         hint_type = hint["type"]
         if not hint_type:
             continue
         # Normalize: "pd.DataFrame" → "DataFrame", "list[str]" → "list"
         hint_base = hint_type.split("[")[0].rsplit(".", 1)[-1].strip()
+        if hint_base.lower() in _PRIMITIVE_CONTAINERS:
+            continue
         for structural in structural_shapes:
             st_base = structural["base_type"]
             if not st_base:
@@ -232,6 +288,8 @@ def compute_compatible_with_edges(graph: Any) -> int:
         if not st_base:
             continue
         st_base_norm = st_base.split("[")[0].rsplit(".", 1)[-1].strip()
+        if st_base_norm.lower() in _PRIMITIVE_CONTAINERS:
+            continue
         for hint in hint_shapes:
             hint_base = hint["type"].split("[")[0].rsplit(".", 1)[-1].strip()
             if st_base_norm.lower() == hint_base.lower():

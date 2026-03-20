@@ -298,6 +298,27 @@ async def get_type_shape(shape_id: str) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError):
         definition = {}
 
+    # Fetch connections (variables, accepting/producing functions, compatible shapes)
+    connections: dict[str, Any] = {
+        "variables": [],
+        "accepting_functions": [],
+        "producing_functions": [],
+        "compatible_shapes": [],
+    }
+    try:
+        conn_result = graph.query(
+            lq.GET_TYPE_SHAPE_CONNECTIONS,
+            params={"id": shape_id},
+        )
+        if conn_result.result_set:
+            row = conn_result.result_set[0]
+            connections["variables"] = [v for v in (row[0] or []) if isinstance(v, dict) and v.get("id")]
+            connections["accepting_functions"] = [f for f in (row[1] or []) if isinstance(f, dict) and f.get("id")]
+            connections["producing_functions"] = [f for f in (row[2] or []) if isinstance(f, dict) and f.get("id")]
+            connections["compatible_shapes"] = [s for s in (row[3] or []) if isinstance(s, dict) and s.get("id")]
+    except Exception as exc:
+        logger.warning("Failed to fetch TypeShape connections: %s", exc)
+
     return {
         "id": props.get("id", ""),
         "shape_hash": props.get("shape_hash", ""),
@@ -305,4 +326,5 @@ async def get_type_shape(shape_id: str) -> dict[str, Any]:
         "base_type": props.get("base_type", ""),
         "definition": definition,
         "created_at": props.get("created_at", ""),
+        "connections": connections,
     }

@@ -84,6 +84,29 @@ export interface ConsumerSubgraph {
   edges: ConsumerSubgraphEdge[];
 }
 
+export interface TypeShapeDetail {
+  id: string;
+  shape_hash: string;
+  kind: string;
+  base_type: string;
+  definition: Record<string, unknown>;
+  created_at: string;
+  connections: {
+    variables: Array<{ id: string; name: string; type_hint: string | null }>;
+    accepting_functions: Array<{ id: string; name: string; kind: string; module_path: string; signature: string }>;
+    producing_functions: Array<{ id: string; name: string; kind: string; module_path: string }>;
+    compatible_shapes: Array<{ id: string; base_type: string }>;
+  };
+}
+
+export function useTypeShapeDetail(shapeId: string | null) {
+  return useQuery({
+    queryKey: ["type-shape-detail", shapeId],
+    queryFn: () => apiFetch<TypeShapeDetail>(`/api/v1/type-shapes/detail/${shapeId!}`),
+    enabled: shapeId !== null,
+  });
+}
+
 export function useConsumerSubgraph(variableId: string | null) {
   return useQuery({
     queryKey: ["consumer-subgraph", variableId],

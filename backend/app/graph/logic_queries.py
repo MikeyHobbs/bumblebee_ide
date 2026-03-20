@@ -733,6 +733,23 @@ RETURN n.id AS id, n.name AS name, n.params AS params,
 LIMIT $limit
 """
 
+FIND_CLASS_MEMBERS = """
+MATCH (m:LogicNode)-[:MEMBER_OF]->(c:LogicNode {kind: 'class'})
+WHERE c.name CONTAINS $class_name AND m.status = 'active'
+RETURN m.id AS id, m.name AS name, m.kind AS kind,
+       m.signature AS signature, m.return_type AS return_type,
+       m.module_path AS module_path, c.name AS class_name
+LIMIT $limit
+"""
+
+FIND_MODULES_BY_PREFIX = """
+MATCH (n:LogicNode)
+WHERE n.status = 'active' AND n.module_path CONTAINS $prefix
+RETURN DISTINCT n.id AS id, n.name AS name, n.kind AS kind,
+       n.signature AS signature, n.module_path AS module_path
+LIMIT $limit
+"""
+
 # --- Compose: assembly queries ---
 
 GET_CLASS_FOR_METHOD = """
@@ -782,6 +799,21 @@ RETURN ts
 GET_TYPE_SHAPE_BY_ID = """
 MATCH (ts:TypeShape {id: $id})
 RETURN ts
+"""
+
+GET_TYPE_SHAPE_CONNECTIONS = """
+MATCH (ts:TypeShape {id: $id})
+OPTIONAL MATCH (v:Variable)-[:HAS_SHAPE]->(ts)
+WITH ts, collect(DISTINCT {id: v.id, name: v.name, type_hint: v.type_hint}) AS variables
+OPTIONAL MATCH (fn:LogicNode)-[:ACCEPTS]->(ts)
+WHERE fn.status = 'active'
+WITH ts, variables, collect(DISTINCT {id: fn.id, name: fn.name, kind: fn.kind, module_path: fn.module_path, signature: fn.signature}) AS accepting_fns
+OPTIONAL MATCH (fn2:LogicNode)-[:PRODUCES]->(ts)
+WHERE fn2.status = 'active'
+WITH ts, variables, accepting_fns, collect(DISTINCT {id: fn2.id, name: fn2.name, kind: fn2.kind, module_path: fn2.module_path}) AS producing_fns
+OPTIONAL MATCH (ts)-[:COMPATIBLE_WITH]->(compat:TypeShape)
+WITH ts, variables, accepting_fns, producing_fns, collect(DISTINCT {id: compat.id, base_type: compat.base_type}) AS compatible_shapes
+RETURN variables, accepting_fns, producing_fns, compatible_shapes
 """
 
 GET_ALL_TYPE_SHAPES = """
@@ -869,7 +901,7 @@ MERGE (s)-[r:COMPATIBLE_WITH]->(t)
 
 FIND_CONSUMERS_FOR_VARIABLE = """
 MATCH (v:Variable {id: $variable_id})-[:HAS_SHAPE]->(ts:TypeShape)
-OPTIONAL MATCH (ts)-[:COMPATIBLE_WITH*0..2]->(cts:TypeShape)
+OPTIONAL MATCH (ts)-[:COMPATIBLE_WITH*0..1]->(cts:TypeShape)
 WITH collect(DISTINCT ts) + collect(DISTINCT cts) AS shapes
 UNWIND shapes AS s
 MATCH (fn:LogicNode)-[:ACCEPTS]->(s)
@@ -879,7 +911,7 @@ RETURN DISTINCT fn
 
 FIND_CONSUMER_SUBGRAPH_FOR_VARIABLE = """
 MATCH (v:Variable {id: $variable_id})-[:HAS_SHAPE]->(ts:TypeShape)
-OPTIONAL MATCH (ts)-[:COMPATIBLE_WITH*0..2]->(cts:TypeShape)
+OPTIONAL MATCH (ts)-[:COMPATIBLE_WITH*0..1]->(cts:TypeShape)
 WITH v, ts, collect(DISTINCT cts) AS compat_shapes
 WITH v, ts, [s IN compat_shapes WHERE s IS NOT NULL] + [ts] AS all_shapes
 UNWIND all_shapes AS s
