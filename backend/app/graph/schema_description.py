@@ -1,102 +1,180 @@
 """Single source of truth for the Bumblebee graph schema description.
 
-Used by the NL-to-Cypher agent, orchestrator chat, and Modelfile generation.
-Derived from logic_queries.py — keep in sync when schema changes.
+Derives the schema text from logic_models.py enums and Pydantic models
+so that prompts never diverge from the actual graph structure.
 """
 
 from __future__ import annotations
 
-GRAPH_SCHEMA = """
-Node Labels and Properties:
+from app.models.logic_models import (
+    EdgeType,
+    FlowResponse,
+    LogicNodeKind,
+    LogicNodeResponse,
+    TypeShapeResponse,
+    VariableResponse,
+)
 
-- LogicNode: id, kind (function|method|class|module|constant|type_alias|flow_function),
-  name, module_path, signature, source_text, semantic_intent, docstring, decorators,
-  params, return_type, tags, status (active|deprecated), start_line, end_line,
-  ast_hash, structural_hash, class_id, derived_from, created_at, updated_at
 
-- Variable: id, name, scope, origin_node_id, origin_line, type_hint,
-  is_parameter, is_attribute, created_at
+# ---------------------------------------------------------------------------
+# Derive node labels + properties from Pydantic models
+# ---------------------------------------------------------------------------
 
-- TypeShape: id, shape_hash, kind, base_type, definition
+def _model_fields(model_cls: type, exclude: set[str] | None = None) -> str:
+    """Return a comma-separated list of field names from a Pydantic model."""
+    exclude = exclude or set()
+    return ", ".join(f for f in model_cls.model_fields if f not in exclude)
 
-- Flow: id, name, description, entry_point, exit_points, node_ids,
-  sub_flow_ids, parent_flow_id, created_at, updated_at
 
-Edge Types (source -> target):
-- CALLS: LogicNode -> LogicNode (function/method calls another)
-- DEPENDS_ON: LogicNode -> LogicNode (general dependency)
-- IMPLEMENTS: LogicNode -> LogicNode (implements an interface/protocol)
-- VALIDATES: LogicNode -> LogicNode (validates input for another)
-- TRANSFORMS: LogicNode -> LogicNode (transforms data for another)
-- INHERITS: LogicNode -> LogicNode (class inherits from parent)
-- MEMBER_OF: LogicNode -> LogicNode (method/attribute belongs to class)
-- ASSIGNS: LogicNode -> Variable (function assigns a value to variable)
-- MUTATES: LogicNode -> Variable (function mutates a variable)
-- READS: LogicNode -> Variable (function reads a variable)
-- RETURNS: LogicNode -> Variable (function returns a variable)
-- PASSES_TO: Variable -> Variable (data flow: value passed between variables)
-- FEEDS: Variable -> Variable (data dependency between variables)
-- HAS_SHAPE: Variable -> TypeShape (variable has a structural type shape)
-- ACCEPTS: LogicNode -> TypeShape (function accepts this type shape as param)
-- PRODUCES: LogicNode -> TypeShape (function produces this type shape)
-- COMPATIBLE_WITH: TypeShape -> TypeShape (structural compatibility)
-- STEP_OF: LogicNode -> Flow (function is a step in a flow)
-- CONTAINS_FLOW: Flow -> Flow (parent flow contains sub-flow)
-- PROMOTED_TO: Flow -> LogicNode (flow promoted to a logic node)
-- DEFINES: LogicNode -> LogicNode (module defines a function/class)
-""".strip()
+def _enum_values(enum_cls: type) -> str:
+    """Return pipe-separated enum member values."""
+    return "|".join(m.value for m in enum_cls)  # type: ignore[attr-defined]
+
+
+# Edge type → (source_label, target_label, description)
+_EDGE_DOCS: dict[str, tuple[str, str, str]] = {
+    "CALLS": ("LogicNode", "LogicNode", "function/method calls another"),
+    "DEPENDS_ON": ("LogicNode", "LogicNode", "general dependency"),
+    "IMPLEMENTS": ("LogicNode", "LogicNode", "implements an interface/protocol"),
+    "VALIDATES": ("LogicNode", "LogicNode", "validates input for another"),
+    "TRANSFORMS": ("LogicNode", "LogicNode", "transforms data for another"),
+    "INHERITS": ("LogicNode", "LogicNode", "class inherits from parent"),
+    "MEMBER_OF": ("LogicNode", "LogicNode", "method belongs to class"),
+    "ASSIGNS": ("LogicNode", "Variable", "function assigns a value to variable"),
+    "MUTATES": ("LogicNode", "Variable", "function mutates a variable"),
+    "READS": ("LogicNode", "Variable", "function reads a variable"),
+    "RETURNS": ("LogicNode", "Variable", "function returns a variable"),
+    "PASSES_TO": ("Variable", "Variable", "data flow: argument passed to callee parameter"),
+    "FEEDS": ("Variable", "Variable", "intra-function: read feeds into assignment"),
+    "HAS_SHAPE": ("Variable", "TypeShape", "variable has a structural type shape"),
+    "ACCEPTS": ("LogicNode", "TypeShape", "function parameter accepts this shape"),
+    "PRODUCES": ("LogicNode", "TypeShape", "function produces this shape"),
+    "COMPATIBLE_WITH": ("TypeShape", "TypeShape", "structural type compatibility"),
+    "STEP_OF": ("LogicNode", "Flow", "function is a step in a flow"),
+    "CONTAINS_FLOW": ("Flow", "Flow", "parent flow contains sub-flow"),
+    "PROMOTED_TO": ("Flow", "LogicNode", "flow promoted to a logic node"),
+}
+
+
+def _build_graph_schema() -> str:
+    """Build the schema text from models — called once at import time."""
+    # Node labels
+    logic_node_props = _model_fields(LogicNodeResponse, exclude={"warnings"})
+    variable_props = _model_fields(VariableResponse)
+    typeshape_props = _model_fields(TypeShapeResponse)
+    flow_props = _model_fields(FlowResponse)
+    kind_values = _enum_values(LogicNodeKind)
+
+    lines = [
+        "Node Labels and Properties:",
+        "",
+        f"- LogicNode: kind ({kind_values}), {logic_node_props}",
+        f"- Variable: {variable_props}",
+        f"- TypeShape: {typeshape_props}",
+        f"- Flow: {flow_props}",
+        "",
+        "Edge Types (source -> target):",
+    ]
+
+    # Edges — iterate over the EdgeType enum so new edges auto-appear
+    for member in EdgeType:
+        doc = _EDGE_DOCS.get(member.value)
+        if doc:
+            src, tgt, desc = doc
+            lines.append(f"- {member.value}: {src} -> {tgt} ({desc})")
+        else:
+            lines.append(f"- {member.value}")
+
+    lines.extend([
+        "",
+        "CRITICAL schema rules:",
+        "- All code entities use :LogicNode with a 'kind' property. There are NO separate labels.",
+        "- Node names are module-qualified: 'services.register_user', 'ingestion_flow.run'.",
+        "  ALWAYS use CONTAINS for name matching, never exact match.",
+        "- Variable names include their scope: 'ingestion_flow.run.parsed'.",
+        "- Variable.scope holds the owning function name: Variable {scope: 'ingestion_flow.run'}.",
+    ])
+
+    return "\n".join(lines)
+
+
+GRAPH_SCHEMA = _build_graph_schema()
+
+
+# ---------------------------------------------------------------------------
+# Few-shot examples — manually curated, tested against live data
+# (see tests/test_cypher_examples.py)
+# ---------------------------------------------------------------------------
 
 FEW_SHOT_EXAMPLES = """
 Examples of natural language questions and their Cypher translations:
 
-1. "What functions does main call?"
-   MATCH (f:LogicNode {kind: 'function', name: 'main'})-[:CALLS]->(g:LogicNode)
-   RETURN g.name AS callee, g.module_path AS file
+1. "What does register_user call?"
+   MATCH (f:LogicNode)-[:CALLS]->(g:LogicNode)
+   WHERE f.name CONTAINS 'register_user'
+   RETURN g.name AS callee
 
-2. "What variables does process_data mutate?"
+2. "What variables does matrix_flatten mutate?"
    MATCH (f:LogicNode)-[:MUTATES]->(v:Variable)
-   WHERE f.name CONTAINS 'process_data'
+   WHERE f.name CONTAINS 'matrix_flatten'
    RETURN v.name AS variable, v.type_hint AS type
 
-3. "Show the inheritance tree for Shape"
-   MATCH path=(c:LogicNode {kind: 'class'})-[:INHERITS*]->(p:LogicNode)
-   WHERE c.name CONTAINS 'Shape'
-   RETURN [n IN nodes(path) | n.name] AS chain
+3. "Show the inheritance tree"
+   MATCH (child:LogicNode)-[:INHERITS]->(parent:LogicNode)
+   RETURN child.name AS child, parent.name AS parent
 
-4. "What reads variable x?"
-   MATCH (f:LogicNode)-[:READS]->(v:Variable)
-   WHERE v.name CONTAINS 'x'
-   RETURN f.name AS reader, f.module_path AS file
+4. "What methods belong to OrderRepository?"
+   MATCH (m:LogicNode)-[:MEMBER_OF]->(c:LogicNode {kind: 'class'})
+   WHERE c.name CONTAINS 'OrderRepository'
+   RETURN m.name AS method
 
-5. "Trace request_body through the codebase"
-   MATCH (v:Variable)-[:PASSES_TO|FEEDS*1..5]->(target:Variable)
-   WHERE v.name CONTAINS 'request_body'
-   RETURN v.name AS source, target.name AS destination
+5. "Trace data flow from run"
+   MATCH (v:Variable)-[:PASSES_TO]->(p:Variable)
+   WHERE v.scope CONTAINS 'run'
+   RETURN v.name AS source, p.name AS target
 
-6. "What's the impact of changing save_record?"
-   MATCH (f:LogicNode)-[:MUTATES]->(v:Variable)<-[:READS]-(consumer:LogicNode)
-   WHERE f.name CONTAINS 'save_record'
-   RETURN v.name AS variable, consumer.name AS affected_function
+6. "What functions accept an Event type?"
+   MATCH (fn:LogicNode)-[:ACCEPTS]->(ts:TypeShape)
+   WHERE ts.base_type CONTAINS 'Event'
+   RETURN fn.name AS function_name, ts.kind AS shape_kind
 
-7. "Show me all classes"
+7. "Show cross-file calls"
+   MATCH (a:LogicNode)-[:CALLS]->(b:LogicNode)
+   WHERE a.module_path <> b.module_path
+   RETURN a.name AS caller, b.name AS callee LIMIT 20
+
+8. "Functions with high fan-out"
+   MATCH (n:LogicNode)-[r:CALLS]->()
+   WITH n, count(r) AS calls
+   WHERE calls > 2
+   RETURN n.name AS function_name, calls
+   ORDER BY calls DESC LIMIT 10
+
+9. "Show me all classes"
    MATCH (n:LogicNode {kind: 'class'})
    RETURN n.name AS name, n.module_path AS file
 
-8. "What methods belong to UserService?"
-   MATCH (m:LogicNode)-[:MEMBER_OF]->(c:LogicNode {kind: 'class'})
-   WHERE c.name CONTAINS 'UserService'
-   RETURN m.name AS method, m.kind AS kind, m.module_path AS file
+10. "What does run assign?"
+    MATCH (f:LogicNode)-[:ASSIGNS]->(v:Variable)
+    WHERE f.name CONTAINS 'run'
+    RETURN v.name AS variable, v.type_hint AS type
+    ORDER BY v.origin_line
 
-9. "Find all functions in the parsing module"
-   MATCH (n:LogicNode {kind: 'function'})
-   WHERE n.module_path CONTAINS 'parsing'
-   RETURN n.name AS function_name, n.module_path AS file
+11. "What does parse_input return?"
+    MATCH (f:LogicNode)-[:RETURNS]->(v:Variable)
+    WHERE f.name CONTAINS 'parse_input'
+    RETURN v.name AS returned_variable
 
-10. "What functions accept an Event type?"
-    MATCH (fn:LogicNode)-[:ACCEPTS]->(ts:TypeShape)
-    WHERE ts.base_type CONTAINS 'Event'
-    RETURN fn.name AS function_name, ts.kind AS shape_kind, ts.definition AS shape
+12. "Show intra-function data flow in parse_input"
+    MATCH (v1:Variable)-[:FEEDS]->(v2:Variable)
+    WHERE v1.scope CONTAINS 'parse_input'
+    RETURN v1.name AS source, v2.name AS target
 """.strip()
+
+
+# ---------------------------------------------------------------------------
+# System prompts (composed from schema + examples)
+# ---------------------------------------------------------------------------
 
 CYPHER_SYSTEM_PROMPT = f"""You are a Cypher query generator for a FalkorDB graph database that models a code repository.
 
@@ -106,23 +184,26 @@ CYPHER_SYSTEM_PROMPT = f"""You are a Cypher query generator for a FalkorDB graph
 
 Instructions:
 - Generate ONLY a valid Cypher query. No explanations, no markdown code blocks.
-- Use CONTAINS for fuzzy name matching unless the user gives an exact name.
-- Always RETURN meaningful properties (name, module_path, start_line) rather than raw nodes when possible.
+- ALWAYS use CONTAINS for name matching. Names are module-qualified (e.g. 'services.register_user').
+- Always RETURN meaningful properties (name, module_path) rather than raw nodes.
 - For traversal queries, use variable-length relationships like [:CALLS*1..3].
 - If the question is ambiguous, prefer a broader query that returns more results.
 - NEVER use CREATE, SET, DELETE, DETACH, MERGE, or any write operations.
-- All code entities use the :LogicNode label with a 'kind' property (function, method, class, module, etc.).
-  There are NO separate :Function, :Class, or :Module labels — always use :LogicNode with kind filter.
 """
 
 ORCHESTRATOR_SYSTEM_PROMPT = f"""You are Bumblebee, an AI assistant for understanding and navigating codebases.
-You have access to a graph database that models the codebase with the following schema:
+You have access to a graph database that models the codebase.
 
 {GRAPH_SCHEMA}
 
-Use the available tools to answer questions about the code. When you need to explore the graph, use query_graph with a Cypher query. For common analysis patterns, use the specialized tools (mutation_timeline, impact_analysis, get_logic_pack, read_file).
+{FEW_SHOT_EXAMPLES}
 
-Important: All code entities use the :LogicNode label with a 'kind' property. There are NO separate :Function, :Class, or :Module labels.
+TOOL USAGE RULES:
+- For ANY question about the codebase, you MUST call query_graph with a Cypher query.
+- ALWAYS use CONTAINS for name matching. Node names are module-qualified (e.g. 'services.register_user', not 'register_user').
+- NEVER guess function signatures or return values. Query the graph first.
+- NEVER respond with raw JSON. Always explain results in natural language.
+- If a query returns empty results, try a broader CONTAINS match.
 
-Always provide clear, concise answers. When showing code or graph results, format them readably.
+When you need to explore the codebase, ALWAYS use query_graph first. Only use specialized tools (get_logic_pack, mutation_timeline) when you need a pre-processed subgraph for deeper analysis.
 """

@@ -68,7 +68,7 @@ def build_call_chain_pack(function_name: str, hops: int = 2) -> LogicPack:
 
     # Get the center node
     center_result = graph.query(
-        "MATCH (f:Function {name: $name}) RETURN f",
+        "MATCH (f:LogicNode) WHERE f.name CONTAINS $name AND f.status = 'active' RETURN f",
         params={"name": function_name},
     )
     if center_result.result_set:
@@ -82,7 +82,8 @@ def build_call_chain_pack(function_name: str, hops: int = 2) -> LogicPack:
 
     # Traverse CALLS edges
     call_result = graph.query(
-        "MATCH path = (f:Function {name: $name})-[:CALLS*1.." + str(hops) + "]->(g:Function) "
+        "MATCH path = (f:LogicNode)-[:CALLS*1.." + str(hops) + "]->(g:LogicNode) "
+        "WHERE f.name CONTAINS $name AND f.status = 'active' "
         "RETURN nodes(path) AS ns, relationships(path) AS rs",
         params={"name": function_name},
     )
@@ -135,7 +136,7 @@ def build_mutation_timeline_pack(variable_name: str) -> LogicPack:
     # Get all interacting functions and edges
     for edge_type in ("ASSIGNS", "MUTATES", "READS", "RETURNS"):
         result = graph.query(
-            f"MATCH (f:Function)-[r:{edge_type}]->(v:Variable {{name: $name}}) RETURN f, r",
+            f"MATCH (f:LogicNode)-[r:{edge_type}]->(v:Variable {{name: $name}}) RETURN f, r",
             params={"name": variable_name},
         )
         for row in result.result_set:
@@ -203,7 +204,7 @@ def build_impact_pack(function_name: str) -> LogicPack:
 
     # Center function
     center_result = graph.query(
-        "MATCH (f:Function {name: $name}) RETURN f",
+        "MATCH (f:LogicNode) WHERE f.name CONTAINS $name AND f.status = 'active' RETURN f",
         params={"name": function_name},
     )
     if center_result.result_set:
@@ -216,7 +217,7 @@ def build_impact_pack(function_name: str) -> LogicPack:
 
     # Mutated variables
     mutates_result = graph.query(
-        "MATCH (f:Function {name: $name})-[m:MUTATES]->(v:Variable) RETURN v, m",
+        "MATCH (f:LogicNode)-[m:MUTATES]->(v:Variable) WHERE f.name CONTAINS $name RETURN v, m",
         params={"name": function_name},
     )
     for row in mutates_result.result_set:
@@ -232,7 +233,7 @@ def build_impact_pack(function_name: str) -> LogicPack:
 
         # Downstream consumers
         consumers_result = graph.query(
-            "MATCH (consumer:Function)-[r:READS]->(v:Variable {name: $name}) RETURN consumer, r",
+            "MATCH (consumer:LogicNode)-[r:READS]->(v:Variable {name: $name}) RETURN consumer, r",
             params={"name": vid},
         )
         for crow in consumers_result.result_set:
@@ -269,7 +270,8 @@ def build_class_hierarchy_pack(class_name: str) -> LogicPack:
 
     # Traverse hierarchy
     hier_result = graph.query(
-        "MATCH path = (c:Class {name: $name})-[:INHERITS*0..5]->(parent:Class) "
+        "MATCH path = (c:LogicNode {kind: 'class'})-[:INHERITS*0..5]->(parent:LogicNode) "
+        "WHERE c.name CONTAINS $name "
         "RETURN nodes(path) AS classes",
         params={"name": class_name},
     )
@@ -292,7 +294,7 @@ def build_class_hierarchy_pack(class_name: str) -> LogicPack:
     for node in list(nodes_list):
         nid = str(node["id"])
         methods_result = graph.query(
-            "MATCH (c {name: $name})-[:DEFINES]->(m:Function) RETURN m",
+            "MATCH (m:LogicNode)-[:MEMBER_OF]->(c:LogicNode) WHERE c.name CONTAINS $name RETURN m",
             params={"name": nid},
         )
         for row in methods_result.result_set:
@@ -327,7 +329,7 @@ def build_function_flow_pack(function_name: str) -> LogicPack:
 
     # Center function
     center_result = graph.query(
-        "MATCH (f:Function {name: $name}) RETURN f",
+        "MATCH (f:LogicNode) WHERE f.name CONTAINS $name AND f.status = 'active' RETURN f",
         params={"name": function_name},
     )
     if center_result.result_set:
@@ -338,9 +340,9 @@ def build_function_flow_pack(function_name: str) -> LogicPack:
         if st:
             snippets[str(d["id"])] = st
 
-    # CONTAINS children (recursive up to 3 levels)
+    # CONTAINS children (recursive up to 8 levels)
     contains_result = graph.query(
-        "MATCH (f:Function {name: $name})-[:CONTAINS*1..8]->(child) RETURN child",
+        "MATCH (f:LogicNode)-[:CONTAINS*1..8]->(child) WHERE f.name CONTAINS $name RETURN child",
         params={"name": function_name},
     )
     for row in contains_result.result_set:
@@ -376,7 +378,8 @@ def build_function_flow_pack(function_name: str) -> LogicPack:
 
     # Variable nodes for this function
     var_result = graph.query(
-        "MATCH (v:Variable) WHERE v.origin_func = $name RETURN v",
+        "MATCH (f:LogicNode)-[:ASSIGNS|READS|MUTATES|RETURNS]->(v:Variable) "
+        "WHERE f.name CONTAINS $name RETURN v",
         params={"name": function_name},
     )
     for row in var_result.result_set:

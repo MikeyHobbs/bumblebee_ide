@@ -48,6 +48,50 @@ class ModelAdapter(ABC):
         yield {}  # pragma: no cover — abstract generator needs yield
 
 
+# Known tool names — text-based tool calls for unknown names are ignored
+_KNOWN_TOOLS = {"query_graph", "mutation_timeline", "impact_analysis", "get_logic_pack", "read_file"}
+
+
+def _try_parse_text_tool_call(text: str) -> dict[str, Any] | None:
+    """Detect a tool call embedded as JSON text in the model's content.
+
+    Some models (e.g. llama3.2) don't use the native tool_calls field and
+    instead output the call as JSON in content. We detect common patterns:
+      {"name": "query_graph", "arguments": {"cypher": "..."}}
+      {"name": "query_graph", "parameters": {"cypher": "..."}}
+
+    Only recognises known tool names to avoid treating hallucinated function
+    calls (e.g. {"name": "register_user", ...}) as real tool invocations.
+
+    Args:
+        text: The accumulated content text from the model.
+
+    Returns:
+        A tool_call dict if detected, None otherwise.
+    """
+    stripped = text.strip()
+    if not (stripped.startswith("{") and stripped.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    if not isinstance(parsed, dict) or "name" not in parsed:
+        return None
+
+    name = parsed["name"]
+    if name not in _KNOWN_TOOLS:
+        return None
+
+    # Models may use "arguments" or "parameters"
+    args = parsed.get("arguments") or parsed.get("parameters") or {}
+    if not isinstance(args, dict):
+        return None
+
+    return {"type": "tool_call", "name": name, "arguments": args}
+
+
 class OllamaAdapter(ModelAdapter):
     """Adapter for Ollama's /api/chat endpoint using OpenAI-compatible tool-use format."""
 
@@ -86,7 +130,7 @@ class OllamaAdapter(ModelAdapter):
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(f"{self.base_url}/api/chat", json=payload)
                 response.raise_for_status()
-                return response.json()  # type: ignore[no-any-return]
+                data = response.json()
         except httpx.HTTPStatusError as exc:
             logger.error("Ollama HTTP error: %s %s", exc.response.status_code, exc.response.text)
             raise ModelAdapterError(f"Ollama returned status {exc.response.status_code}") from exc
@@ -94,10 +138,34 @@ class OllamaAdapter(ModelAdapter):
             logger.error("Ollama request error: %s", exc)
             raise ModelAdapterError(f"Cannot reach Ollama at {self.base_url}: {exc}") from exc
 
+        # Detect text-based tool calls (models that don't use native tool_calls)
+        msg = data.get("message", {})
+        if tools and not msg.get("tool_calls") and msg.get("content"):
+            text_call = _try_parse_text_tool_call(msg["content"])
+            if text_call:
+                logger.info("Detected text-based tool call in chat: %s", text_call["name"])
+                data["message"] = {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": text_call["name"], "arguments": text_call["arguments"]}}
+                    ],
+                }
+
+        return data  # type: ignore[no-any-return]
+
     async def stream_chat(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream responses from Ollama.
+
+        Handles two tool-call formats:
+        1. Native: model sets ``tool_calls`` in the message (e.g. qwen2.5-coder).
+        2. Text-based: model outputs the tool call as JSON in ``content``
+           (e.g. llama3.2). Detected after the stream ends and converted.
+
+        When tools are provided, content tokens are buffered until the stream
+        finishes so we can detect text-based tool calls without partial emission.
 
         Args:
             messages: List of message dicts.
@@ -117,6 +185,9 @@ class OllamaAdapter(ModelAdapter):
         if tools:
             payload["tools"] = tools
 
+        native_tool_calls: list[dict[str, Any]] = []
+        buffered_content = ""
+
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:
@@ -130,26 +201,51 @@ class OllamaAdapter(ModelAdapter):
                             continue
 
                         message = chunk.get("message", {})
-                        tool_calls = message.get("tool_calls")
+                        tool_calls_list = message.get("tool_calls")
 
-                        if tool_calls:
-                            for tc in tool_calls:
-                                yield {
+                        if tool_calls_list:
+                            # Native tool-use format — yield immediately
+                            for tc in tool_calls_list:
+                                call = {
                                     "type": "tool_call",
                                     "name": tc.get("function", {}).get("name", ""),
                                     "arguments": tc.get("function", {}).get("arguments", {}),
                                 }
+                                native_tool_calls.append(call)
+                                yield call
                         elif message.get("content"):
-                            yield {"type": "token", "content": message["content"]}
+                            content = message["content"]
+                            if tools:
+                                # Buffer when tools are available — might be a text tool call
+                                buffered_content += content
+                            else:
+                                yield {"type": "token", "content": content}
 
                         if chunk.get("done", False):
-                            return
+                            break
+
         except httpx.HTTPStatusError as exc:
             logger.error("Ollama stream HTTP error: %s", exc.response.status_code)
             raise ModelAdapterError(f"Ollama returned status {exc.response.status_code}") from exc
         except httpx.RequestError as exc:
             logger.error("Ollama stream request error: %s", exc)
             raise ModelAdapterError(f"Cannot reach Ollama at {self.base_url}: {exc}") from exc
+
+        # If we already got native tool calls, nothing more to do
+        if native_tool_calls:
+            return
+
+        # Check if the buffered content is a text-based tool call
+        if buffered_content and tools:
+            text_call = _try_parse_text_tool_call(buffered_content)
+            if text_call:
+                logger.info("Detected text-based tool call: %s", text_call["name"])
+                yield text_call
+                return
+
+        # Not a tool call — flush buffered content as tokens
+        if buffered_content:
+            yield {"type": "token", "content": buffered_content}
 
 
 class MockAdapter(ModelAdapter):
