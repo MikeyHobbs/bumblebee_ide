@@ -22,7 +22,7 @@ from app.routers.edit import router as edit_router
 from app.routers.chat import router as chat_router
 from app.routers.logic_nodes import router as logic_nodes_router
 from app.routers.edges import router as edges_router
-from app.routers.variables_v2 import router as variables_v2_router
+from app.routers.variables import router as variables_router
 from app.routers.import_router import router as import_router
 from app.routers.flows import router as flows_router
 from app.routers.vfs import router as vfs_router
@@ -98,7 +98,7 @@ app.include_router(chat_router)
 # 800-series Code-as-Data routers
 app.include_router(logic_nodes_router)
 app.include_router(edges_router)
-app.include_router(variables_v2_router)
+app.include_router(variables_router)
 app.include_router(import_router)
 app.include_router(flows_router)
 app.include_router(vfs_router)
