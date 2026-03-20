@@ -29,6 +29,7 @@ from app.services.analysis.hash_identity import (
 )
 from app.services.parsing.relationship_extractor import RelationshipEdge, extract_relationships
 from app.services.parsing.variable_extractor import ShapeEvidence, extract_variables
+from app.services.parsing.dataflow_extractor import extract_dataflow
 from app.services.analysis.type_shape_service import (
     build_shape_definition,
     compute_compatible_with_edges,
@@ -123,7 +124,7 @@ def import_file(
         if parsed_node.node_type == "Module":
             continue
 
-        kind = _parsed_type_to_kind(parsed_node)
+        kind = _parsed_type_to_kind(parsed_node, parse_result.nodes)
         node_id = generate_deterministic_node_id(parsed_node.name)
         ast_hash = compute_ast_hash(parsed_node.source_text)
 
@@ -220,6 +221,8 @@ def import_file(
     # Extract variables for each function node
     shape_evidence: dict[str, ShapeEvidence] = {}
     var_name_to_id: dict[str, str] = {}
+    func_nodes: list[ParsedNode] = []
+    var_result = None
     try:
         func_nodes = [n for n in parse_result.nodes if n.node_type == "Function"]
         if func_nodes:
@@ -270,6 +273,33 @@ def import_file(
     except Exception as exc:
         report.errors.append(f"Variable extraction error in {file_path}: {exc}")
 
+    # Extract and create data flow edges (PASSES_TO, FEEDS)
+    try:
+        if func_nodes and var_result:  # type: ignore[possibly-undefined]
+            dataflow_result = extract_dataflow(
+                source, file_path, parse_result.nodes,
+                rel_edges, var_result.nodes, var_result.edges,  # type: ignore[possibly-undefined]
+            )
+            for df_edge in dataflow_result.edges:
+                source_id = var_name_to_id.get(df_edge.source_name, "")
+                target_id = var_name_to_id.get(df_edge.target_name, "")
+                if source_id and target_id and df_edge.edge_type in lq.EDGE_MERGE_QUERIES:
+                    try:
+                        props = dict(df_edge.properties) if df_edge.properties else {}
+                        graph.query(
+                            lq.EDGE_MERGE_QUERIES[df_edge.edge_type],
+                            params={
+                                "source_id": source_id,
+                                "target_id": target_id,
+                                "properties": props,
+                            },
+                        )
+                        report.edges_created += 1
+                    except Exception:
+                        pass
+    except Exception as exc:
+        report.errors.append(f"Data flow extraction error in {file_path}: {exc}")
+
     # Create TypeShape nodes and edges from shape evidence
     try:
         _create_type_shapes_from_evidence(graph, shape_evidence, name_to_id, var_name_to_id, report)
@@ -304,12 +334,27 @@ def import_directory(
         report.errors.append(f"Not a directory: {dir_path}")
         return report
 
-    # Collect existing node module_paths before import for stale cleanup
-    _pre_import_paths = _get_existing_module_paths()
+    # Detect repo switch by checking whether existing graph nodes belong to a
+    # different repo.  We look at module_path values already in the graph — if
+    # any exist and none are prefixed by the new repo path, we're switching repos
+    # and must flush to avoid stale cross-repo data.
+    from app.config import settings  # pylint: disable=import-outside-toplevel
+    resolved_path = str(dir_path_obj.resolve())
+
+    existing_paths = _get_existing_module_paths()
+    logger.info(
+        "Repo switch check: %d existing paths, new=%s, sample=%s",
+        len(existing_paths), resolved_path, existing_paths[:2] if existing_paths else [],
+    )
+    if existing_paths and not any(p.startswith(resolved_path) for p in existing_paths):
+        logger.info("Repo switch detected — flushing graph before import")
+        _flush_graph()
+        existing_paths = []
+
+    _pre_import_paths = existing_paths
 
     # Set watch_path so the file endpoint can serve files from this repo
-    from app.config import settings  # pylint: disable=import-outside-toplevel
-    settings.watch_path = str(dir_path_obj.resolve())
+    settings.watch_path = resolved_path
 
     # Collect all matching files
     files: list[Path] = []
@@ -395,6 +440,8 @@ def import_directory(
         # Variable nodes and edges
         shape_evidence: dict[str, ShapeEvidence] = {}
         file_var_name_to_id: dict[str, str] = {}
+        func_nodes: list[ParsedNode] = []
+        var_result = None
         try:
             func_nodes = [n for n in parse_result.nodes if n.node_type == "Function"]
             if func_nodes:
@@ -443,6 +490,33 @@ def import_directory(
                             pass
         except Exception as exc:
             report.errors.append(f"Variable extraction error in {file_path_str}: {exc}")
+
+        # Extract and create data flow edges (PASSES_TO, FEEDS)
+        try:
+            if func_nodes and var_result:  # type: ignore[possibly-undefined]
+                dataflow_result = extract_dataflow(
+                    cached_source, file_path_str, parse_result.nodes,
+                    rel_edges, var_result.nodes, var_result.edges,  # type: ignore[possibly-undefined]
+                )
+                for df_edge in dataflow_result.edges:
+                    src_id = file_var_name_to_id.get(df_edge.source_name, "")
+                    tgt_id = file_var_name_to_id.get(df_edge.target_name, "")
+                    if src_id and tgt_id and df_edge.edge_type in lq.EDGE_MERGE_QUERIES:
+                        try:
+                            props = dict(df_edge.properties) if df_edge.properties else {}
+                            graph.query(
+                                lq.EDGE_MERGE_QUERIES[df_edge.edge_type],
+                                params={
+                                    "source_id": src_id,
+                                    "target_id": tgt_id,
+                                    "properties": props,
+                                },
+                            )
+                            report.edges_created += 1
+                        except Exception:
+                            pass
+        except Exception as exc:
+            report.errors.append(f"Data flow extraction error in {file_path_str}: {exc}")
 
         # Create TypeShape nodes and edges from shape evidence
         try:
@@ -517,6 +591,29 @@ def _find_package_root(file_path: Path, search_root: Path) -> Path:
     return current
 
 
+def _flush_graph() -> None:
+    """Delete the entire graph and recreate it.
+
+    Uses GRAPH.DELETE (the Redis command) rather than ``MATCH (n) DETACH DELETE n``
+    because the latter can leave behind schema artefacts in FalkorDB.  After
+    deletion, ``get_graph()`` transparently recreates the graph on the next query.
+
+    Called when a repo switch is detected to prevent stale data from the
+    previous repository leaking into the new import.
+    """
+    from app.graph.client import get_client  # pylint: disable=import-outside-toplevel
+    from app.config import settings as _settings  # pylint: disable=import-outside-toplevel
+
+    client = get_client()
+    try:
+        client.execute_command("GRAPH.DELETE", _settings.falkor_graph_name)
+        logger.info("Graph flushed via GRAPH.DELETE %s", _settings.falkor_graph_name)
+    except Exception:  # pylint: disable=broad-except  # Graph may not exist yet
+        logger.warning("GRAPH.DELETE failed (graph may not exist), falling back to Cypher delete")
+        graph = get_graph()
+        graph.query("MATCH (n) DETACH DELETE n")
+
+
 def _get_existing_module_paths() -> list[str]:
     """Get all distinct module_path values from existing LogicNodes."""
     graph = get_graph()
@@ -573,11 +670,12 @@ def _file_to_module_path(file_path: str) -> str:
     return str(Path(file_path).resolve())
 
 
-def _parsed_type_to_kind(node: ParsedNode) -> LogicNodeKind:
+def _parsed_type_to_kind(node: ParsedNode, all_nodes: list[ParsedNode]) -> LogicNodeKind:
     """Map a ParsedNode type to a LogicNodeKind.
 
     Args:
         node: The parsed node.
+        all_nodes: All parsed nodes from the file (used to check parent type).
 
     Returns:
         Appropriate LogicNodeKind.
@@ -585,10 +683,13 @@ def _parsed_type_to_kind(node: ParsedNode) -> LogicNodeKind:
     if node.node_type == "Class":
         return LogicNodeKind.CLASS
     if node.node_type == "Function":
-        # Methods are functions with a class parent
+        # Methods are functions whose parent is a Class node.
+        # parent_name is set for ALL functions (including top-level ones where
+        # the parent is the Module), so we must check the parent's node_type.
         if node.parent_name:
-            # Check if parent is a class by looking at the parent name pattern
-            return LogicNodeKind.METHOD
+            parent_node = next((n for n in all_nodes if n.name == node.parent_name), None)
+            if parent_node and parent_node.node_type == "Class":
+                return LogicNodeKind.METHOD
         return LogicNodeKind.FUNCTION
     return LogicNodeKind.FUNCTION
 
