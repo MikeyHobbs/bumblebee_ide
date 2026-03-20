@@ -3,6 +3,7 @@ import { Send } from "lucide-react";
 import { useGraphStore } from "@/store/graphStore";
 import { useEditorStore, type EditorTab } from "@/store/editorStore";
 import type { GraphNode, GraphEdge } from "@/types/graph";
+import type { SubgraphResponse } from "@/api/graph";
 
 interface ChatMessage {
   id: string;
@@ -117,11 +118,6 @@ function formatNodeLine(n: AnyNode, indent = ""): string {
 function localName(qualifiedName: string): string {
   const parts = qualifiedName.split(".");
   return parts[parts.length - 1] ?? qualifiedName;
-}
-
-interface SubgraphResponse {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
 }
 
 // ---------------------------------------------------------------------------

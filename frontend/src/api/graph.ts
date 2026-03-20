@@ -37,7 +37,7 @@ export function useGraphNode(nodeId: string | null) {
   });
 }
 
-interface SubgraphResponse {
+export interface SubgraphResponse {
   nodes: GraphNode[];
   edges: GraphEdge[];
 }

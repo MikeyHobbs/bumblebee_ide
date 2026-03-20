@@ -31,7 +31,7 @@ export interface LogicNodeResponse {
 
 // Re-export all hooks from domain modules for convenience
 export { useGraphNodes, useGraphNode, useModuleGraph, useFileMembers, useGraphOverview, useGraphHasData, useAllEdges, useLogicPack, useFunctionDetail, useFunctionControlFlow, useClassDetail } from "./graph";
-export type { OverviewNode, OverviewEdge } from "./graph";
+export type { OverviewNode, OverviewEdge, SubgraphResponse } from "./graph";
 export { useLogicNodes, useLogicNode, useNodeEdges, useNodeVariables } from "./nodes";
 export type { NodeVariable } from "./nodes";
 export { useVariableTimeline, useVariableSearch, useVariableDetail } from "./variables";
