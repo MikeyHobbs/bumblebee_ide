@@ -112,63 +112,64 @@ Examples of natural language questions and their Cypher translations:
 1. "What does register_user call?"
    MATCH (f:LogicNode)-[:CALLS]->(g:LogicNode)
    WHERE f.name CONTAINS 'register_user'
-   RETURN g.name AS callee
+   RETURN f, g
 
 2. "What variables does matrix_flatten mutate?"
    MATCH (f:LogicNode)-[:MUTATES]->(v:Variable)
    WHERE f.name CONTAINS 'matrix_flatten'
-   RETURN v.name AS variable, v.type_hint AS type
+   RETURN f, v
 
 3. "Show the inheritance tree"
    MATCH (child:LogicNode)-[:INHERITS]->(parent:LogicNode)
-   RETURN child.name AS child, parent.name AS parent
+   RETURN child, parent
 
 4. "What methods belong to OrderRepository?"
    MATCH (m:LogicNode)-[:MEMBER_OF]->(c:LogicNode {kind: 'class'})
    WHERE c.name CONTAINS 'OrderRepository'
-   RETURN m.name AS method
+   RETURN m, c
 
 5. "Trace data flow from run"
-   MATCH (v:Variable)-[:PASSES_TO]->(p:Variable)
-   WHERE v.scope CONTAINS 'run'
-   RETURN v.name AS source, p.name AS target
+   MATCH (caller:LogicNode)-[:CALLS]->(callee:LogicNode),
+         (v:Variable)-[:PASSES_TO]->(p:Variable)
+   WHERE caller.name CONTAINS 'run'
+     AND v.scope = caller.name
+     AND p.scope = callee.name
+   RETURN caller, callee
 
 6. "What functions accept an Event type?"
    MATCH (fn:LogicNode)-[:ACCEPTS]->(ts:TypeShape)
    WHERE ts.base_type CONTAINS 'Event'
-   RETURN fn.name AS function_name, ts.kind AS shape_kind
+   RETURN fn
 
 7. "Show cross-file calls"
    MATCH (a:LogicNode)-[:CALLS]->(b:LogicNode)
    WHERE a.module_path <> b.module_path
-   RETURN a.name AS caller, b.name AS callee LIMIT 20
+   RETURN a, b LIMIT 20
 
 8. "Functions with high fan-out"
    MATCH (n:LogicNode)-[r:CALLS]->()
    WITH n, count(r) AS calls
    WHERE calls > 2
-   RETURN n.name AS function_name, calls
-   ORDER BY calls DESC LIMIT 10
+   RETURN n ORDER BY calls DESC LIMIT 10
 
 9. "Show me all classes"
    MATCH (n:LogicNode {kind: 'class'})
-   RETURN n.name AS name, n.module_path AS file
+   RETURN n
 
 10. "What does run assign?"
     MATCH (f:LogicNode)-[:ASSIGNS]->(v:Variable)
     WHERE f.name CONTAINS 'run'
-    RETURN v.name AS variable, v.type_hint AS type
-    ORDER BY v.origin_line
+    RETURN f, v
 
 11. "What does parse_input return?"
     MATCH (f:LogicNode)-[:RETURNS]->(v:Variable)
     WHERE f.name CONTAINS 'parse_input'
-    RETURN v.name AS returned_variable
+    RETURN f, v
 
 12. "Show intra-function data flow in parse_input"
-    MATCH (v1:Variable)-[:FEEDS]->(v2:Variable)
-    WHERE v1.scope CONTAINS 'parse_input'
-    RETURN v1.name AS source, v2.name AS target
+    MATCH (f:LogicNode)-[:ASSIGNS]->(v1:Variable)-[:FEEDS]->(v2:Variable)
+    WHERE f.name CONTAINS 'parse_input'
+    RETURN f, v1, v2
 """.strip()
 
 
@@ -191,19 +192,17 @@ Instructions:
 - NEVER use CREATE, SET, DELETE, DETACH, MERGE, or any write operations.
 """
 
-ORCHESTRATOR_SYSTEM_PROMPT = f"""You are Bumblebee, an AI assistant for understanding and navigating codebases.
-You have access to a graph database that models the codebase.
+ORCHESTRATOR_SYSTEM_PROMPT = f"""You are Bumblebee, a codebase assistant. You MUST use the query_graph tool for EVERY question.
+
+NEVER write Cypher in your response text. NEVER show queries to the user. ALWAYS call the query_graph tool.
 
 {GRAPH_SCHEMA}
 
 {FEW_SHOT_EXAMPLES}
 
-TOOL USAGE RULES:
-- For ANY question about the codebase, you MUST call query_graph with a Cypher query.
-- ALWAYS use CONTAINS for name matching. Node names are module-qualified (e.g. 'services.register_user', not 'register_user').
-- NEVER guess function signatures or return values. Query the graph first.
-- NEVER respond with raw JSON. Always explain results in natural language.
-- If a query returns empty results, try a broader CONTAINS match.
-
-When you need to explore the codebase, ALWAYS use query_graph first. Only use specialized tools (get_logic_pack, mutation_timeline) when you need a pre-processed subgraph for deeper analysis.
+RULES:
+- You MUST call query_graph for EVERY question. No exceptions. Do not explain, just call the tool.
+- ALWAYS use CONTAINS for name matching. Names are module-qualified (e.g. 'services.register_user').
+- After receiving results, summarise them briefly.
+- If results are empty, call query_graph again with a broader CONTAINS match.
 """

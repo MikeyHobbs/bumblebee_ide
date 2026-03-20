@@ -25,8 +25,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "query_graph",
             "description": (
-                "Execute a Cypher query against the FalkorDB code graph. "
-                "Use this for ad-hoc graph queries to explore the codebase structure."
+                "Execute a read-only Cypher query against the FalkorDB code graph. "
+                "Use this for ALL questions about the codebase. "
+                "Node names are module-qualified — always use CONTAINS for matching."
             ),
             "parameters": {
                 "type": "object",
@@ -43,77 +44,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "mutation_timeline",
-            "description": (
-                "Get the mutation timeline for a variable: all functions that assign, mutate, "
-                "read, or return it, plus data flow edges (PASSES_TO, FEEDS)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "variable_name": {
-                        "type": "string",
-                        "description": "Qualified variable name to trace.",
-                    }
-                },
-                "required": ["variable_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "impact_analysis",
-            "description": (
-                "Analyze the downstream impact of changing a function: what variables it mutates "
-                "and which other functions consume those variables."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "function_name": {
-                        "type": "string",
-                        "description": "Qualified function name to analyze impact for.",
-                    }
-                },
-                "required": ["function_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_logic_pack",
-            "description": (
-                "Retrieve a Logic Pack (pre-processed subgraph) for a code entity. "
-                "Pack types: call_chain, mutation_timeline, impact, class_hierarchy, function_flow."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pack_type": {
-                        "type": "string",
-                        "enum": ["call_chain", "mutation_timeline", "impact", "class_hierarchy", "function_flow"],
-                        "description": "Type of Logic Pack to retrieve.",
-                    },
-                    "entity_name": {
-                        "type": "string",
-                        "description": "Name of the function, class, or variable to build the pack for.",
-                    },
-                    "hops": {
-                        "type": "integer",
-                        "description": "Max traversal depth for call_chain packs. Default 2.",
-                    },
-                },
-                "required": ["pack_type", "entity_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "read_file",
-            "description": "Read the content of a file from the indexed repository.",
+            "description": "Read the content of a source file from the indexed repository.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -141,9 +73,6 @@ async def execute_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, A
     """
     handlers: dict[str, Any] = {
         "query_graph": _handle_query_graph,
-        "mutation_timeline": _handle_mutation_timeline,
-        "impact_analysis": _handle_impact_analysis,
-        "get_logic_pack": _handle_get_logic_pack,
         "read_file": _handle_read_file,
     }
 
@@ -191,6 +120,8 @@ async def _handle_query_graph(arguments: dict[str, Any]) -> Any:
         raise ToolExecutionError(f"Cypher execution failed: {exc}") from exc
 
     rows: list[dict[str, Any]] = []
+    nodes: list[dict[str, Any]] = []
+    seen_node_ids: set[str] = set()
     header = result.header if hasattr(result, "header") else []
     column_names = [h[1] if isinstance(h, (list, tuple)) else str(h) for h in header]
 
@@ -200,7 +131,15 @@ async def _handle_query_graph(arguments: dict[str, Any]) -> Any:
             col_name = column_names[idx] if idx < len(column_names) else f"col_{idx}"
             if hasattr(value, "properties"):
                 labels = value.labels if hasattr(value, "labels") else []
-                row[col_name] = {"labels": labels, "properties": dict(value.properties)}
+                props = {k: (v if isinstance(v, (str, int, bool)) or v is None else str(v))
+                         for k, v in value.properties.items()}
+                node_id = str(props.get("id", props.get("name", "")))
+                row[col_name] = {"labels": labels, "properties": props}
+                # Collect unique nodes for graph display
+                if node_id and node_id not in seen_node_ids:
+                    seen_node_ids.add(node_id)
+                    label = labels[0] if labels else "Unknown"
+                    nodes.append({"id": node_id, "label": label, "properties": props})
             elif isinstance(value, list):
                 converted = []
                 for item in value:
@@ -214,7 +153,48 @@ async def _handle_query_graph(arguments: dict[str, Any]) -> Any:
                 row[col_name] = value
         rows.append(row)
 
-    return rows
+    # Fallback: resolve scalar strings that might be node names/ids
+    if not seen_node_ids:
+        candidate_names: set[str] = set()
+        for row in rows:
+            for v in row.values():
+                if isinstance(v, str) and ("." in v or "-" in v):
+                    candidate_names.add(v)
+        if candidate_names:
+            try:
+                resolve_result = graph.query(
+                    "MATCH (n) WHERE n.name IN $names OR n.id IN $names RETURN n",
+                    params={"names": list(candidate_names)},
+                )
+                for rrow in resolve_result.result_set:
+                    for rval in rrow:
+                        if hasattr(rval, "properties"):
+                            labels = rval.labels if hasattr(rval, "labels") else []
+                            props = {k: (v if isinstance(v, (str, int, bool)) or v is None else str(v))
+                                     for k, v in rval.properties.items()}
+                            node_id = str(props.get("id", props.get("name", "")))
+                            if node_id and node_id not in seen_node_ids:
+                                seen_node_ids.add(node_id)
+                                label = labels[0] if labels else "Unknown"
+                                nodes.append({"id": node_id, "label": label, "properties": props})
+            except Exception:
+                logger.debug("Fallback node resolution failed", exc_info=True)
+
+    # Fetch edges between collected nodes for graph highlighting
+    edges: list[dict[str, Any]] = []
+    if len(seen_node_ids) > 1:
+        try:
+            id_list = list(seen_node_ids)
+            edge_result = graph.query(
+                "MATCH (a)-[r]->(b) WHERE a.id IN $ids AND b.id IN $ids RETURN type(r) AS type, a.id AS source, b.id AS target",
+                params={"ids": id_list},
+            )
+            for erow in edge_result.result_set:
+                edges.append({"type": erow[0], "source": erow[1], "target": erow[2], "properties": {}})
+        except Exception:
+            pass
+
+    return {"rows": rows, "nodes": nodes, "edges": edges}
 
 
 async def _handle_mutation_timeline(arguments: dict[str, Any]) -> Any:

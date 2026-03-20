@@ -49,16 +49,79 @@ class ModelAdapter(ABC):
 
 
 # Known tool names — text-based tool calls for unknown names are ignored
-_KNOWN_TOOLS = {"query_graph", "mutation_timeline", "impact_analysis", "get_logic_pack", "read_file"}
+_KNOWN_TOOLS = {"query_graph", "read_file"}
+
+
+def _try_extract_cypher_as_tool_call(text: str) -> dict[str, Any] | None:
+    """Detect a raw Cypher query in the text and wrap it as a query_graph tool call.
+
+    Models sometimes output the Cypher in a code fence instead of calling the tool.
+    We detect MATCH ... RETURN patterns and convert them.
+
+    Args:
+        text: The accumulated content text from the model.
+
+    Returns:
+        A tool_call dict if Cypher detected, None otherwise.
+    """
+    # Try markdown fenced block first
+    fence_match = re.search(r"```(?:cypher)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    if fence_match:
+        candidate = fence_match.group(1).strip()
+    else:
+        candidate = text.strip()
+
+    # Check if it looks like a Cypher query (starts with MATCH/OPTIONAL/WITH/CALL)
+    upper = candidate.lstrip().upper()
+    if not any(upper.startswith(kw) for kw in ("MATCH", "OPTIONAL MATCH", "WITH", "CALL", "UNWIND")):
+        return None
+    if "RETURN" not in upper:
+        return None
+
+    return {"type": "tool_call", "name": "query_graph", "arguments": {"cypher": candidate}}
+
+
+def _extract_json_from_text(text: str) -> str | None:
+    """Extract a JSON object from text that may contain markdown fences or preamble.
+
+    Handles:
+      - Bare JSON: '{"name": ...}'
+      - Markdown fenced: '```json\\n{"name": ...}\\n```'
+      - Preamble + JSON: 'Some text\\n{"name": ...}'
+      - Preamble + fenced: 'Some text\\n```json\\n{"name": ...}\\n```'
+
+    Args:
+        text: Raw text from the model.
+
+    Returns:
+        Extracted JSON string, or None if no JSON object found.
+    """
+    # Try markdown code fence first: ```json ... ``` or ``` ... ```
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    if fence_match:
+        candidate = fence_match.group(1).strip()
+        if candidate.startswith("{"):
+            return candidate
+
+    # Try to find a JSON object in the text (handles preamble + bare JSON)
+    # Search for the first { that could start a JSON object
+    brace_start = text.find("{")
+    if brace_start == -1:
+        return None
+    candidate = text[brace_start:].strip()
+    # Walk backwards from end to find the matching closing brace
+    brace_end = candidate.rfind("}")
+    if brace_end == -1:
+        return None
+    return candidate[: brace_end + 1]
 
 
 def _try_parse_text_tool_call(text: str) -> dict[str, Any] | None:
     """Detect a tool call embedded as JSON text in the model's content.
 
     Some models (e.g. llama3.2) don't use the native tool_calls field and
-    instead output the call as JSON in content. We detect common patterns:
-      {"name": "query_graph", "arguments": {"cypher": "..."}}
-      {"name": "query_graph", "parameters": {"cypher": "..."}}
+    instead output the call as JSON in content. Handles markdown fences,
+    preamble text, and both 'arguments' and 'parameters' keys.
 
     Only recognises known tool names to avoid treating hallucinated function
     calls (e.g. {"name": "register_user", ...}) as real tool invocations.
@@ -69,15 +132,16 @@ def _try_parse_text_tool_call(text: str) -> dict[str, Any] | None:
     Returns:
         A tool_call dict if detected, None otherwise.
     """
-    stripped = text.strip()
-    if not (stripped.startswith("{") and stripped.endswith("}")):
+    json_str = _extract_json_from_text(text)
+    if not json_str:
         return None
+
     try:
-        parsed = json.loads(stripped)
+        parsed = json.loads(json_str)
     except (json.JSONDecodeError, ValueError):
         return None
 
-    if not isinstance(parsed, dict) or "name" not in parsed:
+    if not isinstance(parsed, dict) or "name" not in parsed or "arguments" not in parsed and "parameters" not in parsed:
         return None
 
     name = parsed["name"]
@@ -142,6 +206,8 @@ class OllamaAdapter(ModelAdapter):
         msg = data.get("message", {})
         if tools and not msg.get("tool_calls") and msg.get("content"):
             text_call = _try_parse_text_tool_call(msg["content"])
+            if not text_call:
+                text_call = _try_extract_cypher_as_tool_call(msg["content"])
             if text_call:
                 logger.info("Detected text-based tool call in chat: %s", text_call["name"])
                 data["message"] = {
@@ -241,6 +307,13 @@ class OllamaAdapter(ModelAdapter):
             if text_call:
                 logger.info("Detected text-based tool call: %s", text_call["name"])
                 yield text_call
+                return
+
+            # Fallback: detect raw Cypher in code blocks or plain text
+            cypher_call = _try_extract_cypher_as_tool_call(buffered_content)
+            if cypher_call:
+                logger.info("Detected raw Cypher in text, converting to query_graph call")
+                yield cypher_call
                 return
 
         # Not a tool call — flush buffered content as tokens
