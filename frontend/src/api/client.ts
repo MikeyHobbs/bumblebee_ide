@@ -7,7 +7,7 @@ export async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export const WS_URL = `ws://${window.location.hostname}:8000/api/v1/ws`;
+export const WS_URL = `ws://${window.location.hostname}:8111/api/v1/ws`;
 
 export interface LogicNodeResponse {
   id: string;
@@ -38,3 +38,5 @@ export { useVariableTimeline, useVariableSearch, useVariableDetail } from "./var
 export { useFlows, useFlow, useGapReport } from "./flows";
 export { useIndexRepository, useImportDirectory, useSemanticDiff } from "./import";
 export { useFileContent } from "./files";
+export { useCypherCompare, useRateEval, useEvalHistory, useEvalStats } from "./cypherEval";
+export type { CompareResponse, ModelResult, EvalStats } from "./cypherEval";

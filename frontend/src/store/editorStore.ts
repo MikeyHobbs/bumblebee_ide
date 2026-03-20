@@ -54,6 +54,9 @@ interface EditorState {
   markClean: (tabId: string) => void;
   updateTab: (tabId: string, patch: Partial<Pick<EditorTab, "nodeId" | "label" | "modulePath" | "sourceNodeIds">>) => void;
 
+  // Clear all tabs (e.g. on codebase switch)
+  clearAllTabs: () => void;
+
   // Backward compat — creates/reuses tab with matching nodeId
   openNodeView: (view: NodeView) => void;
 
@@ -154,7 +157,31 @@ export const useEditorStore = create<EditorState>((set) => ({
       };
     }),
 
+  clearAllTabs: () => set({ tabs: [], activeTabId: null }),
+
   setCursorPosition: (pos) => set({ cursorPosition: pos }),
   setHighlightedLines: (range) => set({ highlightedLines: range }),
   setSelectedRange: (range) => set({ selectedRange: range }),
 }));
+
+/** Open the Cypher eval comparison panel as an editor tab. */
+export function openCypherEvalTab(): void {
+  const state = useEditorStore.getState();
+  const existing = state.tabs.find((t) => t.modulePath === "__cypher_eval__");
+  if (existing) {
+    state.setActiveTab(existing.id);
+    return;
+  }
+  state.openTab({
+    id: crypto.randomUUID(),
+    label: "Cypher Eval",
+    nodeId: null,
+    modulePath: "__cypher_eval__",
+    content: "",
+    language: "plaintext",
+    sourceNodeIds: [],
+    flowId: null,
+    gaps: null,
+    isDirty: false,
+  });
+}

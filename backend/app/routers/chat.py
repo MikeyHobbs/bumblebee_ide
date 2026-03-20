@@ -13,8 +13,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.graph.schema_description import ORCHESTRATOR_SYSTEM_PROMPT
 from app.models.exceptions import ModelAdapterError
-from app.services.agent.cypher_agent import SYSTEM_PROMPT as CYPHER_SYSTEM_PROMPT
 from app.services.agent.model_adapter import get_adapter
 from app.services.agent.tool_executor import TOOL_DEFINITIONS, execute_tool
 
@@ -24,14 +24,6 @@ router = APIRouter(prefix="/api/v1", tags=["chat"])
 
 # Maximum number of tool-use rounds before forcing a final answer
 MAX_TOOL_ROUNDS = 5
-
-ORCHESTRATOR_SYSTEM_PROMPT = """You are Bumblebee, an AI assistant for understanding and navigating codebases.
-You have access to a graph database that models the codebase as nodes (Module, Class, Function, Variable, Statement, ControlFlow, Branch) and edges (DEFINES, CALLS, INHERITS, IMPORTS, ASSIGNS, MUTATES, READS, RETURNS, PASSES_TO, FEEDS, CONTAINS, NEXT).
-
-Use the available tools to answer questions about the code. When you need to explore the graph, use query_graph with a Cypher query. For common analysis patterns, use the specialized tools (mutation_timeline, impact_analysis, get_logic_pack, read_file).
-
-Always provide clear, concise answers. When showing code or graph results, format them readably.
-"""
 
 
 class ChatRequest(BaseModel):
@@ -133,11 +125,15 @@ async def _stream_chat_response(
             # Execute the tool
             tool_result = await execute_tool(tool_name, tool_args)
 
-            yield _sse_event({
+            tool_result_event: dict[str, Any] = {
                 "type": "tool_result",
                 "name": tool_name,
                 "result": tool_result,
-            })
+            }
+            # Include the cypher query so the frontend can highlight results on the graph
+            if tool_name == "query_graph" and "cypher" in tool_args:
+                tool_result_event["cypher"] = tool_args["cypher"]
+            yield _sse_event(tool_result_event)
 
             # Add tool result to message history
             current_messages.append({

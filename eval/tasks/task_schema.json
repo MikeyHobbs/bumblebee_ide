@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EvalTask",
+  "description": "A single evaluation task: a question about a codebase that requires executing code to answer.",
+  "type": "object",
+  "required": ["id", "question", "category", "difficulty", "target_repo", "gold_answer", "validation"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique task identifier (e.g., 'task-001')"
+    },
+    "question": {
+      "type": "string",
+      "description": "Natural language question that requires running code to answer"
+    },
+    "category": {
+      "type": "string",
+      "enum": ["direct", "composition", "cross_module", "data_flow", "discovery"],
+      "description": "Task difficulty category"
+    },
+    "difficulty": {
+      "type": "string",
+      "enum": ["easy", "medium", "hard"],
+      "description": "Difficulty level within the category"
+    },
+    "target_repo": {
+      "type": "string",
+      "description": "Name of the test repository to run against"
+    },
+    "gold_answer": {
+      "description": "Expected answer. Can be any JSON-serializable value."
+    },
+    "gold_path": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Qualified names of the functions that should be called to produce the answer"
+    },
+    "setup_code": {
+      "type": "string",
+      "description": "Python code to run before the model's code (imports, fixtures, etc.)"
+    },
+    "validation": {
+      "type": "string",
+      "enum": ["exact_match", "contains", "type_match", "human_rated"],
+      "description": "How to score the model's answer against gold_answer"
+    },
+    "notes": {
+      "type": "string",
+      "description": "Optional notes about why this task tests what it tests"
+    }
+  }
+}

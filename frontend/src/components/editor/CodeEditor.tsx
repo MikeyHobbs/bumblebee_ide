@@ -6,6 +6,7 @@ import { useEditorStore } from "@/store/editorStore";
 import { useGraphStore } from "@/store/graphStore";
 import { getOrCreateNodeModel, getOrCreateTabModel } from "@/editor/ModelManager";
 import ExternalRefsPanel from "../panels/ExternalRefsPanel";
+import CypherEvalPanel from "../panels/CypherEvalPanel";
 import { apiFetch } from "@/api/client";
 
 interface GraphNodeResponse {
@@ -295,6 +296,11 @@ function CodeEditor() {
       );
     }
   }, [highlightedLines]);
+
+  // Render CypherEvalPanel for __cypher_eval__ tabs
+  if (activeTab?.modulePath === "__cypher_eval__") {
+    return <CypherEvalPanel />;
+  }
 
   return (
     <div className="flex flex-col h-full">

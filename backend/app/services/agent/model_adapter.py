@@ -224,22 +224,20 @@ class MockAdapter(ModelAdapter):
             A Cypher query string.
         """
         if "inherits" in text or "hierarchy" in text:
-            return f"MATCH path=(c:Class)-[:INHERITS*]->(p) WHERE c.name CONTAINS '{entity}' RETURN path"
+            return f"MATCH path=(c:LogicNode {{kind: 'class'}})-[:INHERITS*]->(p:LogicNode) WHERE c.name CONTAINS '{entity}' RETURN path"
         if "calls" in text:
-            return f"MATCH (f:Function)-[:CALLS]->(g) WHERE f.name CONTAINS '{entity}' RETURN g"
+            return f"MATCH (f:LogicNode)-[:CALLS]->(g:LogicNode) WHERE f.name CONTAINS '{entity}' RETURN g"
         if "reads" in text and "variable" in text:
-            return f"MATCH (f:Function)-[:READS]->(v:Variable) WHERE v.name CONTAINS '{entity}' RETURN f, v"
-        if "async" in text:
-            return "MATCH (f:Function {is_async: true}) RETURN f"
+            return f"MATCH (f:LogicNode)-[:READS]->(v:Variable) WHERE v.name CONTAINS '{entity}' RETURN f, v"
         if "class" in text and "module" in text:
-            return f"MATCH (m:Module)-[:DEFINES]->(c:Class) WHERE m.name CONTAINS '{entity}' RETURN c"
-        if "contains" in text:
-            return f"MATCH (f:Function)-[:CONTAINS]->(s) WHERE f.name CONTAINS '{entity}' RETURN s"
+            return f"MATCH (n:LogicNode {{kind: 'class'}}) WHERE n.module_path CONTAINS '{entity}' RETURN n"
+        if "member" in text or "method" in text:
+            return f"MATCH (m:LogicNode)-[:MEMBER_OF]->(c:LogicNode {{kind: 'class'}}) WHERE c.name CONTAINS '{entity}' RETURN m"
         if "pass" in text:
             return (
                 f"MATCH (v1:Variable)-[:PASSES_TO]->(v2:Variable) WHERE v2.name CONTAINS '{entity}' RETURN v1, v2"
             )
-        return f"MATCH (n) WHERE n.name CONTAINS '{entity}' RETURN n LIMIT 10"
+        return f"MATCH (n:LogicNode) WHERE n.name CONTAINS '{entity}' RETURN n LIMIT 10"
 
     async def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """Return a mock response, optionally with tool calls.
