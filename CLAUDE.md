@@ -58,7 +58,7 @@ docs/                      # Architecture docs, schema spec, tickets
 
 ```bash
 # Backend (run from backend/ or use Makefile from root)
-uv run uvicorn app.main:app --reload --port 8000   # dev server
+uv run uvicorn app.main:app --reload --port 8111   # dev server
 uv run black . --line-length 120                    # format
 uv run isort . --profile black --line-length 120    # sort imports
 uv run pylint --fail-under=9.5 app/                 # lint

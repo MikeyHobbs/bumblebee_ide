@@ -38,14 +38,14 @@ All services use fixed ports in development. These are the canonical values — 
 
 | Service               | Port   | Notes                                    |
 |-----------------------|--------|------------------------------------------|
-| FastAPI backend       | `8000` | `uvicorn app.main:app --reload`          |
+| FastAPI backend       | `8111` | `uvicorn app.main:app --reload`          |
 | Vite frontend         | `5173` | Vite default, do not change              |
 | FalkorDB              | `6379` | Redis-compatible port                    |
-| WebSocket (backend)   | `8000` | Same process as FastAPI via `/ws` path   |
+| WebSocket (backend)   | `8111` | Same process as FastAPI via `/ws` path   |
 
 `.env.example`:
 ```
-BACKEND_PORT=8000
+BACKEND_PORT=8111
 FRONTEND_PORT=5173
 FALKOR_HOST=localhost
 FALKOR_PORT=6379
@@ -115,7 +115,7 @@ No CSS Modules, no styled-components, no Emotion. Tailwind only. Custom design t
 
 ## 6. API Contract (Frontend ↔ Backend)
 
-Base URL: `http://localhost:8000/api/v1`
+Base URL: `http://localhost:8111/api/v1`
 
 ### REST Endpoints
 
@@ -209,7 +209,7 @@ Root `Makefile` targets:
 ```makefile
 up:     docker compose -f docker/docker-compose.yml up -d
 down:   docker compose -f docker/docker-compose.yml down
-backend: cd backend && uv run uvicorn app.main:app --reload --port 8000
+backend: cd backend && uv run uvicorn app.main:app --reload --port 8111
 frontend: cd frontend && npm run dev
 lint:   cd backend && uv run pylint --fail-under=9.5 app/ && uv run mypy app/
 test:   cd backend && uv run pytest --cov=app --cov-fail-under=80
@@ -230,7 +230,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    backend_port: int = 8000
+    backend_port: int = 8111
     falkor_host: str = "localhost"
     falkor_port: int = 6379
     falkor_graph_name: str = "bumblebee"

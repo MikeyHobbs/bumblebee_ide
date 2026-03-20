@@ -89,13 +89,13 @@ docker ps | grep falkordb
 cd backend
 uv sync                # install Python dependencies
 cd ..
-make backend           # starts FastAPI on http://localhost:8000
+make backend           # starts FastAPI on http://localhost:8111
 ```
 
 The backend serves the REST API and WebSocket endpoint. Verify it's running:
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:8111/health
 # {"status":"ok"}
 ```
 
@@ -119,7 +119,7 @@ On the landing page, enter the absolute path to a Python repository and click **
 You can also index via the API:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/index \
+curl -X POST http://localhost:8111/api/v1/index \
   -H "Content-Type: application/json" \
   -d '{"path": "/absolute/path/to/your/python/repo"}'
 ```
@@ -143,7 +143,7 @@ make up                # start FalkorDB (Docker)
 make down              # stop FalkorDB
 
 # Backend
-make backend           # run FastAPI dev server with hot reload (:8000)
+make backend           # run FastAPI dev server with hot reload (:8111)
 make test              # run pytest with coverage (≥80%)
 make lint              # black + isort + pylint checks
 make format            # auto-format with black + isort
@@ -209,7 +209,7 @@ Copy `.env.example` to `.env` and adjust as needed:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BACKEND_PORT` | `8000` | FastAPI port |
+| `BACKEND_PORT` | `8111` | FastAPI port |
 | `FALKOR_HOST` | `localhost` | FalkorDB host |
 | `FALKOR_PORT` | `6379` | FalkorDB port |
 | `FALKOR_GRAPH_NAME` | `bumblebee` | Graph database name |

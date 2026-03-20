@@ -10,14 +10,14 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    backend_port: int = 8000
+    backend_port: int = 8111
     falkor_host: str = "localhost"
     falkor_port: int = 6379
     falkor_graph_name: str = "bumblebee"
     watch_path: str = ""
     ollama_host: str = "http://localhost:11434"
-    orchestrator_model: str = "llama3.2:latest"
-    cypher_model: str = "llama3.2:latest"
+    orchestrator_model: str = "qwen2.5-coder:7b"
+    cypher_model: str = "qwen2.5-coder:7b"
 
 
 settings = Settings()
